@@ -8,6 +8,7 @@ import requests
 
 from broutegpt import (
     FreeLLMRouter,
+    _deep_reasoning_score,
     _estimate_model_tps,
     _is_deep_reasoning_model,
     _sort_models,
@@ -123,6 +124,26 @@ class CloudFirstRouter:
         all_cloud = self._all_cloud_chat_models(vision_only=vision_only)
         lookup = {(m["provider"], m["id"]): m for m in all_cloud}
 
+        sel_opt = getattr(self.router, "selected_option", None)
+        if sel_opt == "9" and getattr(self.router, "custom_model", None):
+            cm = self.router.custom_model
+            key = (cm.get("provider", ""), cm.get("id", ""))
+            if key in lookup:
+                _append_unique([lookup[key]])
+            else:
+                _append_unique([{"provider": key[0], "id": key[1], "chat": True, "vision": True}])
+        elif sel_opt in ("2", "3", "4", "5"):
+            preferred = [m for m in all_cloud if m.get("option") == sel_opt]
+            if tier == "deep":
+                preferred = sorted(
+                    preferred,
+                    key=lambda m: (_deep_reasoning_score(m), m.get("output_limit", 0), m.get("input_limit", 0)),
+                    reverse=True,
+                )
+            elif tier in ("speed", "fast_debug"):
+                preferred = _sort_models_by_speed(preferred)
+            _append_unique(preferred)
+
         if tier == "smart":
             is_tty = sys.stdout.isatty()
             _write_status_line("[Router] Estimating token budget & ranking cloud models...", is_tty)
@@ -163,15 +184,25 @@ class CloudFirstRouter:
             _append_unique(_sort_models_by_speed(all_cloud))
 
         elif tier == "deep":
-            for ref in self.router.role_config.get("deep_synthesis") or []:
-                key = (ref.get("provider", ""), ref.get("id", ""))
-                if key in lookup:
-                    _append_unique([lookup[key]])
-            deep_pool = [m for m in _sort_models(all_cloud) if _is_deep_reasoning_model(m)]
-            _append_unique(deep_pool)
-            _append_unique(_sort_models(all_cloud))
+            deep_sorted = sorted(
+                all_cloud,
+                key=lambda m: (_deep_reasoning_score(m), m.get("output_limit", 0), m.get("input_limit", 0)),
+                reverse=True,
+            )
+            role_refs = [
+                lookup[(ref.get("provider", ""), ref.get("id", ""))]
+                for ref in (self.router.role_config.get("deep_synthesis") or [])
+                if (ref.get("provider", ""), ref.get("id", "")) in lookup
+            ]
+            role_refs.sort(
+                key=lambda m: (_deep_reasoning_score(m), m.get("output_limit", 0), m.get("input_limit", 0)),
+                reverse=True,
+            )
+            _append_unique(role_refs)
+            _append_unique([m for m in deep_sorted if _is_deep_reasoning_model(m)])
+            _append_unique(deep_sorted)
 
-        elif tier == "speed":
+        elif tier in ("speed", "fast_debug"):
             _append_unique(_sort_models_by_speed(all_cloud))
 
         else:

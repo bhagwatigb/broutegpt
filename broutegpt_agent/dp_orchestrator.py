@@ -186,22 +186,23 @@ class DPOrchestrator:
         plan_prompt = (
             f"PROJECT GOAL:\n{goal}\n\n"
             f"AVAILABLE INPUT FILES IN WORKSPACE:\n{input_summary}\n\n"
-            f"Design a sequential Decision-Point (DP) plan (maximum {self.max_dps} DPs) to build, "
+            f"Design a detailed, sequential Decision-Point (DP) architectural plan (maximum {self.max_dps} DPs) to build, "
             "verify, and deliver the complete working suite with zero human questions.\n"
+            "For each DP, specify exact module boundaries, function/CLI signatures, data structures, edge cases, and concrete verification assertions.\n"
             "The final DP must verify end-to-end execution against the input files (or realistic test fixtures if none were supplied) "
             "and produce all requested output artifacts.\n\n"
             "Return ONLY valid JSON in this exact schema:\n"
             "{\n"
             '  "project_name": "short_snake_case_name",\n'
-            '  "overview": "1-2 sentence summary",\n'
+            '  "overview": "2-3 sentence architectural summary",\n'
             '  "entrypoint": "main_script_or_cli.py",\n'
             '  "dps": [\n'
             "    {\n"
             '      "id": 1,\n'
             '      "title": "Short DP Title",\n'
-            '      "description": "Concrete modules/functions/CLI features to build in this DP",\n'
+            '      "description": "Detailed modules, function signatures, CLI flags, and edge-case handling to build in this DP",\n'
             '      "deliverables": ["file1.py", "verify_dp1.py"],\n'
-            '      "verification_criteria": "Exact assertions verify_dp1.py must test"\n'
+            '      "verification_criteria": "Exact edge-case and end-to-end assertions verify_dp1.py must test"\n'
             "    }\n"
             "  ]\n"
             "}"
@@ -211,6 +212,7 @@ class DPOrchestrator:
             system_prompt=PLAN_SYSTEM_PROMPT,
             tier="deep",
             temperature=0.1,
+            max_tokens=4096,
             validator=_validate_plan_json,
         )
         plan = _extract_json_object(raw)
@@ -228,12 +230,26 @@ class DPOrchestrator:
         print()
         return plan
 
-    def _select_escalation_tier(self, consecutive_failures: int) -> str:
-        if consecutive_failures <= 1:
-            return "smart"
-        if consecutive_failures <= 3:
+    def _select_step_tier(
+        self,
+        step: int,
+        consecutive_failures: int,
+        has_written_code: bool,
+    ) -> str:
+        """
+        Asymmetric role routing:
+          - Heavy deep-reasoning models (`deep`) create the initial DP implementation
+            and take back over if fast debugging fails >= 3 consecutive times.
+          - Fast smaller models (`speed`) run verification scripts, inspect files,
+            and apply quick surgical patches for minor bugs.
+        """
+        if consecutive_failures >= 4:
+            return "max_context"
+        if consecutive_failures >= 3:
             return "deep"
-        return "max_context"
+        if step == 1 or not has_written_code:
+            return "deep"
+        return "speed"
 
     def _run_regression_suite(self, up_to_dp: int) -> tuple[bool, str]:
         """Runs verify_dp1.py .. verify_dp{up_to_dp}.py sequentially to guarantee zero regressions."""
@@ -278,10 +294,15 @@ class DPOrchestrator:
         consecutive_failures = 0
         last_model_used = "system"
         did_auto_rollback = False
+        has_written_code = False
 
         for step in range(1, self.max_steps_per_dp + 1):
-            tier = self._select_escalation_tier(consecutive_failures)
-            budget = 14000 if tier == "smart" else 24000
+            tier = self._select_step_tier(
+                step=step,
+                consecutive_failures=consecutive_failures,
+                has_written_code=has_written_code,
+            )
+            budget = 14000 if tier == "speed" else 24000
             compiled = self.condenser.compile_history(
                 self.stream,
                 target_token_budget=budget,
@@ -341,6 +362,7 @@ class DPOrchestrator:
                     )
                     if outcome.ok:
                         consecutive_failures = 0
+                        has_written_code = True
                         obs_text = outcome.message
                         print(f"  Created/Wrote: {rel_path} ({len(content.splitlines())} lines) — syntax/static check PASSED")
                     else:

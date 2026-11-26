@@ -127,7 +127,7 @@ def run_agent_cli(
     print(f"  Goal        : {goal}")
     print(f"  Inputs      : {', '.join(inputs) if inputs else 'None'}")
     print(f"  Max DPs     : {max_dps} | Max Steps/DP: {max_steps}")
-    print("  Routing     : Cloud-First Tiered Escalation -> Last-Resort Ollama")
+    print("  Routing     : Heavy Deep-Reasoning Architect & Build -> Fast Small Debugger -> Deep Escalation -> Last-Resort Ollama")
     print("============================================================\n")
 
     orch = DPOrchestrator(

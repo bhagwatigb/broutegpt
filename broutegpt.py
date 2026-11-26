@@ -505,14 +505,22 @@ def _model_fits_budget(model: Dict[str, Any], safe_in: int, safe_out: int) -> bo
     return in_lim >= (safe_in + safe_out)
 
 
-def _is_deep_reasoning_model(model: Dict[str, Any]) -> bool:
+def _deep_reasoning_score(model: Dict[str, Any]) -> int:
     mid = model.get("id", "").lower()
     tokens = set(re.split(r"[-_/:]+", mid))
-    if tokens & {"0.5b", "1b", "1.5b", "2b", "3b", "4b", "7b", "8b", "9b", "12b", "lite", "mini", "nano", "tiny"}:
-        return False
-    if "r1" in tokens:
-        return True
-    return any(k in mid for k in ("70b", "72b", "120b", "235b", "405b", "qwen3", "qwq", "versatile", "llama-3.3", "llama-4", "maverick", "flash", "27b", "large", "plus"))
+    if tokens & {"0.5b", "1b", "1.5b", "2b", "3b", "4b", "7b", "8b", "9b", "12b", "lite", "mini", "nano", "tiny", "instant"}:
+        return 0
+    if (tokens & {"r1", "qwq", "o1", "o3"}) or any(k in mid for k in ("thinking", "reasoner", "235b", "405b", "gpt-oss-120b")):
+        return 4
+    if any(k in mid for k in ("120b", "70b", "72b", "llama-3.3", "llama-4", "maverick", "kimi-k2", "glm-4", "qwen3", "32b", "27b", "large", "plus", "versatile")):
+        return 3
+    if any(k in mid for k in ("flash", "scout", "24b", "17b", "gemma-3")):
+        return 2
+    return 1
+
+
+def _is_deep_reasoning_model(model: Dict[str, Any]) -> bool:
+    return _deep_reasoning_score(model) >= 2
 
 
 def _encode_image(image_path: str) -> tuple[str, str]:
@@ -597,7 +605,12 @@ class FreeLLMRouter:
             m for m in catalog
             if m.get("modality") == "audio_transcription" or any(k in m.get("id", "").lower() for k in ("whisper", "asr", "stt"))
         ]
-        deep_models = [m for m in cap_sorted if _is_deep_reasoning_model(m)] or cap_sorted
+        deep_ranked = sorted(
+            [m for m in catalog if m.get("chat", True) and _is_deep_reasoning_model(m)],
+            key=lambda m: (_deep_reasoning_score(m), m.get("output_limit", 0), m.get("input_limit", 0)),
+            reverse=True,
+        )
+        deep_models = deep_ranked or cap_sorted
 
         def _refs(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, str]]:
             out: List[Dict[str, str]] = []
