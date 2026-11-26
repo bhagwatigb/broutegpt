@@ -1,4 +1,3 @@
-cd ~/broutegpt && cat << 'EOF' > Dockerfile
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,5 +22,4 @@ RUN mkdir -p /workspace /app/chatbot_outputs
 
 ENTRYPOINT ["python3", "/app/broutegpt.py"]
 CMD ["--help"]
-EOF
 

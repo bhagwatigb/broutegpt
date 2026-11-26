@@ -1,4 +1,3 @@
-cd ~/broutegpt && cat << 'EOF' > docker-compose.yml
 services:
   broutegpt:
     build: .
