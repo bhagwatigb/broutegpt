@@ -12,7 +12,7 @@ from .event_stream import EventStream
 from .input_inspector import InputInspector
 from .repo_map import RepoMapper
 from .router_adapter import CloudFirstRouter
-from .terminal_executor import TerminalExecutor
+from .terminal_executor import CommandResult, TerminalExecutor
 
 
 PLAN_SYSTEM_PROMPT = (
@@ -25,19 +25,21 @@ PLAN_SYSTEM_PROMPT = (
 
 STEP_SYSTEM_PROMPT = """You are an autonomous senior software engineer executing a project Decision Point (DP) inside a macOS terminal workspace with ZERO human interaction.
 
-Respond with ONLY ONE valid JSON action object per turn (no prose outside JSON). Choose strictly from these schemas:
+Respond with ONLY ONE valid JSON action object per turn (no prose outside JSON). Every JSON action MUST include a concise `"thought"` field (1-2 plain sentences explaining what you found from the previous output/error, what bug or task you are addressing, and what file/command this step executes).
+
+Choose strictly from these schemas:
 1. Write a new or complete file:
-   {"action": "write_file", "path": "relative/path.py", "content": "full file text..."}
-2. Patch an existing file using surgical SEARCH/REPLACE blocks (preferred for edits):
-   {"action": "patch_file", "path": "relative/path.py", "edits": [{"search": "exact old lines", "replace": "new lines"}], "fallback_content": "optional full file if patch misses"}
+   {"thought": "Creating parser.py to load FASTA sequences and compute GC content.", "action": "write_file", "path": "relative/path.py", "content": "full file text..."}
+2. Patch an existing file using surgical SEARCH/REPLACE blocks (preferred for debugging/edits):
+   {"thought": "verify_dp1.py raised ZeroDivisionError in cli.py; removing the invalid division.", "action": "patch_file", "path": "relative/path.py", "edits": [{"search": "exact old lines", "replace": "new lines"}], "fallback_content": "optional full file if patch misses"}
 3. Read numbered lines of an existing file:
-   {"action": "read_file", "path": "relative/path.py", "start_line": 1, "end_line": 200}
+   {"thought": "Inspecting lines 1-80 of cli.py to locate the traceback line.", "action": "read_file", "path": "relative/path.py", "start_line": 1, "end_line": 200}
 4. List directory contents:
-   {"action": "list_dir", "path": "."}
+   {"thought": "Checking generated files in the workspace.", "action": "list_dir", "path": "."}
 5. Run a Zsh command in the workspace root (tests, scripts, pip/syntax checks):
-   {"action": "run_shell", "command": "python3 verify_dp1.py"}
+   {"thought": "Running verify_dp1.py to verify parser outputs against sample_inputs.", "action": "run_shell", "command": "python3 verify_dp1.py"}
 6. Declare the current DP complete ONLY AFTER `verify_dp<k>.py` exists and passed with exit code 0:
-   {"action": "dp_complete", "summary": "concise summary of what was built and verified"}
+   {"thought": "verify_dp1.py passed all assertions with exit code 0; marking DP 1 complete.", "action": "dp_complete", "summary": "concise summary of what was built and verified"}
 
 Rules:
 - Never ask questions or wait for confirmation.
@@ -77,6 +79,20 @@ def _validate_plan_json(raw_text: str) -> Optional[str]:
         return None
     except Exception as exc:
         return str(exc)
+
+
+def _format_console_snippet(text: str, max_lines: int = 8, max_chars: int = 650) -> str:
+    lines = [ln.rstrip() for ln in text.strip().splitlines() if ln.strip()]
+    if not lines:
+        return "(no output)"
+    if len(lines) > max_lines:
+        kept = lines[:3] + [f"... ({len(lines) - 7} line(s) omitted) ..."] + lines[-4:]
+    else:
+        kept = lines
+    joined = "\n    ".join(kept)
+    if len(joined) > max_chars:
+        joined = joined[:max_chars] + " ..."
+    return joined
 
 
 class DPOrchestrator:
@@ -159,9 +175,14 @@ class DPOrchestrator:
                 shutil.copy2(src, dest)
             staged_paths.append(str(dest))
 
-        return self.inspector.inspect(staged_paths if staged_paths else inputs)
+        report = self.inspector.inspect(staged_paths if staged_paths else inputs)
+        if report["manifest"]:
+            names = ", ".join(m["name"] for m in report["manifest"])
+            print(f"[Stage 0 | Inputs] Staged {len(report['manifest'])} input(s) into sample_inputs/: {names}")
+        return report
 
     def _generate_master_plan(self, goal: str, input_summary: str) -> Dict[str, Any]:
+        print("[Stage 0 | Architect] Generating Decision-Point execution plan...")
         plan_prompt = (
             f"PROJECT GOAL:\n{goal}\n\n"
             f"AVAILABLE INPUT FILES IN WORKSPACE:\n{input_summary}\n\n"
@@ -200,6 +221,11 @@ class DPOrchestrator:
         plan["dps"] = dps
         plan["planned_by"] = used_model
         self.plan_path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        print(f"[Plan Ready] {plan.get('project_name', 'project')} ({len(dps)} DP(s), entrypoint: {plan.get('entrypoint', 'N/A')}):")
+        for dp in dps:
+            print(f"  - DP {dp['id']}: {dp.get('title')} -> deliverables: {dp.get('deliverables', [])}")
+        print()
         return plan
 
     def _select_escalation_tier(self, consecutive_failures: int) -> str:
@@ -233,6 +259,7 @@ class DPOrchestrator:
         title = str(dp.get("title", f"DP {dp_id}"))
         verify_script = f"verify_dp{dp_id}.py"
 
+        print(f"--- Starting DP {dp_id}: {title} ---")
         dp_spec_text = (
             f"=== STARTING DECISION POINT {dp_id}: {title} ===\n"
             f"Description : {dp.get('description', '')}\n"
@@ -273,7 +300,7 @@ class DPOrchestrator:
                 f"- Mandatory Verification Script: `{verify_script}`\n\n"
                 f"INPUT FILES:\n{input_summary}\n\n"
                 f"CURRENT WORKSPACE REPO MAP:\n{repo_map}\n\n"
-                "Choose your next single JSON action (`write_file`, `patch_file`, `read_file`, `list_dir`, `run_shell`, or `dp_complete`)."
+                "Choose your next single JSON action (`write_file`, `patch_file`, `read_file`, `list_dir`, `run_shell`, or `dp_complete`) and include a concise `thought` explaining what you found and what you are changing or testing."
             )
 
             raw_reply, used_model = self.router.query_autonomous(
@@ -287,6 +314,11 @@ class DPOrchestrator:
             last_model_used = used_model
             action_obj = parse_agent_action(raw_reply)
             act = action_obj["action"]
+            thought = str(action_obj.get("thought") or action_obj.get("diagnosis") or "").strip()
+
+            print(f"[DP {dp_id} | Step {step}/{self.max_steps_per_dp}]")
+            if thought:
+                print(f"  Finding/Plan : {thought}")
 
             act_ev = self.stream.append(
                 "action",
@@ -295,7 +327,7 @@ class DPOrchestrator:
                 model=used_model,
             )
 
-            # Execute action
+            # Execute action and print live findings
             if act == "write_file":
                 rel_path = str(action_obj["path"])
                 content = str(action_obj["content"])
@@ -310,12 +342,15 @@ class DPOrchestrator:
                     if outcome.ok:
                         consecutive_failures = 0
                         obs_text = outcome.message
+                        print(f"  Created/Wrote: {rel_path} ({len(content.splitlines())} lines) — syntax/static check PASSED")
                     else:
                         consecutive_failures += 1
                         obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
+                        print(f"  Wrote File   : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
                 except Exception as exc:
                     consecutive_failures += 1
                     obs_text = f"ERROR writing {rel_path}: {exc}"
+                    print(f"  Write Error  : {rel_path} -> {exc}")
 
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
@@ -340,12 +375,15 @@ class DPOrchestrator:
                     if outcome.ok:
                         consecutive_failures = 0
                         obs_text = outcome.message
+                        print(f"  Debug/Patched: {rel_path} ({len(edits)} block(s), {outcome.mode_used}) — static check PASSED")
                     else:
                         consecutive_failures += 1
                         obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
+                        print(f"  Patched File : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
                 except Exception as exc:
                     consecutive_failures += 1
                     obs_text = f"ERROR patching {rel_path}: {exc}"
+                    print(f"  Patch Error  : {rel_path} -> {exc}")
 
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
@@ -355,16 +393,20 @@ class DPOrchestrator:
                 e_line = int(action_obj.get("end_line") or 250)
                 try:
                     obs_text = self.mapper.read_file_numbered(rel_path, start_line=s_line, end_line=e_line)
+                    print(f"  Inspected    : {rel_path} (lines {s_line}-{e_line})")
                 except Exception as exc:
                     obs_text = f"ERROR reading {rel_path}: {exc}"
+                    print(f"  Read Error   : {rel_path} -> {exc}")
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
             elif act == "list_dir":
                 rel_path = str(action_obj.get("path") or ".")
                 try:
                     obs_text = self.mapper.list_dir(rel_path)
+                    print(f"  Listed Dir   : {rel_path}")
                 except Exception as exc:
                     obs_text = f"ERROR listing {rel_path}: {exc}"
+                    print(f"  List Error   : {rel_path} -> {exc}")
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
             elif act == "run_shell":
@@ -377,15 +419,22 @@ class DPOrchestrator:
                         label=f"shell:{cmd[:40]}",
                         model=used_model,
                     )
+                    raw_out = "\n".join(part for part in (res.stdout.strip(), res.stderr.strip()) if part)
+                    snippet = _format_console_snippet(raw_out)
                     if res.ok:
                         consecutive_failures = 0
                         obs_text = f"SHELL PASSED:\n{res.format_for_llm()}"
+                        print(f"  Executed     : `{cmd}` -> PASSED (exit=0, {res.duration_sec}s)")
+                        print(f"  Output       :\n    {snippet}")
                     else:
                         consecutive_failures += 1
                         obs_text = f"SHELL FAILED:\n{res.format_for_llm()}\nAnalyze the traceback and fix the root cause."
+                        print(f"  Executed     : `{cmd}` -> FAILED (exit={res.exit_code}, {res.duration_sec}s)")
+                        print(f"  Problem Found:\n    {snippet}")
                 except Exception as exc:
                     consecutive_failures += 1
                     obs_text = f"SHELL BLOCKED/ERROR: {exc}"
+                    print(f"  Shell Error  : `{cmd}` -> {exc}")
 
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
@@ -405,6 +454,8 @@ class DPOrchestrator:
                         event_id=ver_ev.id,
                         model=used_model,
                     )
+                    print(f"  Gate Check   : VERIFIED (`{verify_script}` + regression suite PASSED)")
+                    print(f"  DP Summary   : {summary} [Checkpoint #{ckpt.step_id}]\n")
                     return {
                         "dp_id": dp_id,
                         "title": title,
@@ -416,6 +467,9 @@ class DPOrchestrator:
                     }
 
                 consecutive_failures += 1
+                err_snippet = _format_console_snippet(gate_log)
+                print("  Gate Check   : REJECTED — verification script failed:")
+                print(f"    {err_snippet}")
                 self.stream.append(
                     "observation",
                     f"DP_COMPLETE REJECTED — Verification/Regression Gate Failed:\n{gate_log}\n"
@@ -433,6 +487,7 @@ class DPOrchestrator:
                     restore_context=False,
                     reason=f"Auto-rollback workspace to DP {dp_id} start after {consecutive_failures} consecutive failures",
                 )
+                print(f"  Auto-Rollback: Restored workspace files to clean DP {dp_id} start (Step #{dp_start_ckpt.step_id}) while keeping error diagnostics.")
                 self.stream.append(
                     "note",
                     f"Workspace files were rolled back to clean DP {dp_id} start (step #{dp_start_ckpt.step_id}) "
@@ -458,6 +513,7 @@ class DPOrchestrator:
         if resume and self.plan_path.exists():
             plan = json.loads(self.plan_path.read_text(encoding="utf-8"))
             self.stream.append("note", "Resumed existing dp_plan.json run.", dp_index=0)
+            print("[Resume] Loaded existing dp_plan.json")
         else:
             self.stream.append("goal", f"{goal}\n\nStaged Inputs:\n{input_summary}", dp_index=0)
             plan = self._generate_master_plan(goal, input_summary)
@@ -498,4 +554,3 @@ class DPOrchestrator:
             encoding="utf-8",
         )
         return summary_report
-

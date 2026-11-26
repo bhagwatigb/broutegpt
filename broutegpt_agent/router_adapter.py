@@ -1,5 +1,6 @@
 import shutil
 import subprocess
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -33,12 +34,29 @@ NON_CODING_MODEL_KEYWORDS = (
 )
 
 
+def _clear_status_line(is_tty: bool) -> None:
+    if is_tty:
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.flush()
+
+
+def _write_status_line(msg: str, is_tty: bool) -> None:
+    if is_tty:
+        cols = shutil.get_terminal_size((100, 24)).columns
+        clipped = msg[: max(24, cols - 1)]
+        sys.stdout.write(f"\r\033[2K{clipped}")
+        sys.stdout.flush()
+
+
 class CloudFirstRouter:
     """
     Wraps FreeLLMRouter so all eligible cloud models (Gemini, Groq, OpenRouter,
     NVIDIA NIM, Hugging Face) are tried first across tiered strategies, and
     local Ollama is used STRICTLY as a last-resort fallback when every eligible
     cloud model has failed or entered cooldown.
+
+    Transient routing/fallback attempts overwrite a single terminal line and
+    auto-erase once a model succeeds so console output stays clean.
     """
 
     def __init__(self, router: Optional[FreeLLMRouter] = None, **router_kwargs: Any) -> None:
@@ -106,6 +124,8 @@ class CloudFirstRouter:
         lookup = {(m["provider"], m["id"]): m for m in all_cloud}
 
         if tier == "smart":
+            is_tty = sys.stdout.isatty()
+            _write_status_line("[Router] Estimating token budget & ranking cloud models...", is_tty)
             history_text = "\n".join(m.get("content", "") for m in (history or []))
             sizing_prompt = f"{history_text}\n{prompt}".strip() if history_text else prompt
 
@@ -137,6 +157,7 @@ class CloudFirstRouter:
             finally:
                 self.router._call_model = orig_call
                 self.router.models_by_option["1"] = saved_ollama
+                _clear_status_line(is_tty)
 
             _append_unique(task_plan.get("ranked_candidates") or [])
             _append_unique(_sort_models_by_speed(all_cloud))
@@ -224,7 +245,9 @@ class CloudFirstRouter:
         if not active:
             return None, None, [f"[{stage_label}] All {len(candidates)} candidate(s) currently in cooldown."]
 
+        is_tty = sys.stdout.isatty()
         errors: List[str] = []
+
         for idx, model in enumerate(active, 1):
             prov = model["provider"]
             mid = model["id"]
@@ -233,13 +256,15 @@ class CloudFirstRouter:
 
             eff_max = max_tokens
             if task_plan is not None:
-                # Ensure generous output room (at least 4096 tokens) so JSON code actions never truncate mid-string
                 target_out = max_tokens or max(int(task_plan["safe_output_tokens"]), 4096)
                 out_lim = int(model.get("output_limit") or target_out)
                 eff_max = min(target_out, out_lim)
 
             t0 = time.perf_counter()
-            print(f"[Router:{stage_label}] Trying ({idx}/{len(active)}) {prov}:{mid} ...")
+            _write_status_line(
+                f"[Routing:{stage_label}] Trying {idx}/{len(active)}: {prov}:{mid} ...",
+                is_tty,
+            )
             try:
                 text = self.router._call_model(
                     prov,
@@ -272,6 +297,11 @@ class CloudFirstRouter:
                     "status": "ok",
                     "latency_sec": elapsed,
                 })
+
+                # Erase all transient routing/fallback status text and print only the winning model
+                _clear_status_line(is_tty)
+                reroute_badge = f" (rerouted after {len(errors)} fallback{'s' if len(errors) != 1 else ''})" if errors else ""
+                print(f"[Model:{stage_label}] {prov}:{mid} ({elapsed}s){reroute_badge}")
                 return text, f"{prov}:{mid}", errors
 
             except Exception as exc:
@@ -295,8 +325,13 @@ class CloudFirstRouter:
                     "latency_sec": elapsed,
                 })
                 errors.append(f"{prov}:{mid} -> {err_str}")
-                print(f"[Fallback:{stage_label}] {prov}:{mid} failed ({err_str[:120]}). Next...")
+                short_err = err_str.splitlines()[0][:65]
+                _write_status_line(
+                    f"[Fallback:{stage_label}] {prov}:{mid} ({short_err}) -> trying {idx + 1}/{len(active)}...",
+                    is_tty,
+                )
 
+        _clear_status_line(is_tty)
         return None, None, errors
 
     def query_autonomous(
@@ -348,8 +383,8 @@ class CloudFirstRouter:
             )
 
         print(
-            f"[Last-Resort Fallback] All {len(cloud_list)} cloud model(s) exhausted/cooled-down -> "
-            f"switching to local Ollama ({len(ollama_list)} model(s))..."
+            f"[Fallback -> Local Ollama] Cloud pool exhausted ({len(cloud_list)} models) -> "
+            f"trying local Ollama ({len(ollama_list)} model(s))..."
         )
         self._ensure_ollama_running()
         text, used_model, ollama_errors = self._try_candidate_list(
@@ -371,4 +406,3 @@ class CloudFirstRouter:
             "Both cloud pool and last-resort local Ollama models failed:\n"
             + "\n".join((cloud_errors[-5:] + ollama_errors[-5:]))
         )
-
