@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.broutegpt
+broutegpt_project
+chatbot_outputs
+free_models_cache.json
+__pycache__
+*.pyc
+.DS_Store
+venv
+.venv

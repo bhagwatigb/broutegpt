@@ -1,0 +1,19 @@
+cd ~/broutegpt && cat << 'EOF' > docker-compose.yml
+services:
+  broutegpt:
+    build: .
+    image: broutegpt:latest
+    container_name: broutegpt-agent
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./workspace:/workspace
+      - ./chatbot_outputs:/app/chatbot_outputs
+      - ./free_models_cache.json:/app/free_models_cache.json
+    working_dir: /app
+EOF
+
