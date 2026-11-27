@@ -22,6 +22,18 @@ VALID_ACTIONS = {
     "dp_complete",
 }
 
+MAX_BATCH_ACTIONS = 6
+
+
+def normalize_action_batch(action_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if "actions" in action_obj and isinstance(action_obj["actions"], list):
+        raw_actions = list(action_obj["actions"])
+        if len(raw_actions) > MAX_BATCH_ACTIONS:
+            print(f"[WARNING] Action batch size {len(raw_actions)} exceeds MAX_BATCH_ACTIONS={MAX_BATCH_ACTIONS}. Truncating to {MAX_BATCH_ACTIONS}.")
+            raw_actions = raw_actions[:MAX_BATCH_ACTIONS]
+        return raw_actions
+    return [action_obj]
+
 
 @dataclass
 class StaticCheckResult:
@@ -72,9 +84,21 @@ def _escape_raw_newlines_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+def _normalize_single_action_dict(item: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(item.get("action") or item.get("tool") or "").strip().lower()
+    if action not in VALID_ACTIONS:
+        raise ValueError(
+            f"Invalid or missing 'action': '{action}'. Must be one of {sorted(VALID_ACTIONS)}."
+        )
+    normalized = dict(item)
+    normalized["action"] = action
+    return normalized
+
+
 def parse_agent_action(raw_response: str) -> Dict[str, Any]:
     """
-    Extracts and validates a single JSON action envelope from model output.
+    Extracts and validates a single JSON action envelope OR a multi-action batch
+    envelope (`{"thought": "...", "actions": [...]}`) from model output.
     Raises ValueError with a concise diagnostic if the response is malformed.
     """
     text = raw_response.strip()
@@ -107,43 +131,61 @@ def parse_agent_action(raw_response: str) -> Dict[str, Any]:
     if parsed is None:
         raise ValueError(f"Could not parse valid JSON action object: {last_err}")
 
-    action = str(parsed.get("action") or parsed.get("tool") or "").strip().lower()
-    if action not in VALID_ACTIONS:
-        raise ValueError(
-            f"Invalid or missing 'action': '{action}'. Must be one of {sorted(VALID_ACTIONS)}."
-        )
-    parsed["action"] = action
-    return parsed
+    if "actions" in parsed:
+        raw_actions = parsed.get("actions")
+        if not isinstance(raw_actions, list) or not (1 <= len(raw_actions) <= MAX_BATCH_ACTIONS):
+            raise ValueError(
+                f"'actions' must be a non-empty list of 1 to {MAX_BATCH_ACTIONS} action objects."
+            )
+        normalized_list: List[Dict[str, Any]] = []
+        for idx, sub in enumerate(raw_actions):
+            if not isinstance(sub, dict):
+                raise ValueError(f"actions[{idx}] must be a JSON object.")
+            normalized_list.append(_normalize_single_action_dict(sub))
+        parsed["actions"] = normalized_list
+        return parsed
+
+    return _normalize_single_action_dict(parsed)
+
+
+def _validate_single_action_fields(obj: Dict[str, Any]) -> Optional[str]:
+    act = obj["action"]
+    if act == "write_file":
+        if not obj.get("path") or "content" not in obj:
+            return "write_file requires 'path' and 'content'"
+    elif act == "patch_file":
+        if not obj.get("path"):
+            return "patch_file requires 'path'"
+        has_edits = isinstance(obj.get("edits"), list) and len(obj["edits"]) > 0
+        has_flat = ("search" in obj and "replace" in obj)
+        if not has_edits and not has_flat:
+            return "patch_file requires 'edits' list (or 'search' and 'replace')"
+    elif act == "read_file":
+        if not obj.get("path"):
+            return "read_file requires 'path'"
+    elif act == "run_shell":
+        if not str(obj.get("command") or "").strip():
+            return "run_shell requires non-empty 'command'"
+    elif act in ("grep_search", "glob_files"):
+        if not str(obj.get("pattern") or "").strip():
+            return f"{act} requires non-empty 'pattern'"
+    elif act == "dp_complete":
+        if not str(obj.get("summary") or "").strip():
+            return "dp_complete requires 'summary'"
+    return None
 
 
 def validate_action_json(raw_response: str) -> Optional[str]:
     """Router-compatible validator callback: returns None if valid, else error string."""
     try:
         obj = parse_agent_action(raw_response)
-        act = obj["action"]
-        if act == "write_file":
-            if not obj.get("path") or "content" not in obj:
-                return "write_file requires 'path' and 'content'"
-        elif act == "patch_file":
-            if not obj.get("path"):
-                return "patch_file requires 'path'"
-            has_edits = isinstance(obj.get("edits"), list) and len(obj["edits"]) > 0
-            has_flat = ("search" in obj and "replace" in obj)
-            if not has_edits and not has_flat:
-                return "patch_file requires 'edits' list (or 'search' and 'replace')"
-        elif act == "read_file":
-            if not obj.get("path"):
-                return "read_file requires 'path'"
-        elif act == "run_shell":
-            if not str(obj.get("command") or "").strip():
-                return "run_shell requires non-empty 'command'"
-        elif act in ("grep_search", "glob_files"):
-            if not str(obj.get("pattern") or "").strip():
-                return f"{act} requires non-empty 'pattern'"
-        elif act == "dp_complete":
-            if not str(obj.get("summary") or "").strip():
-                return "dp_complete requires 'summary'"
-        return None
+        if "actions" in obj:
+            for idx, sub in enumerate(obj["actions"]):
+                sub_err = _validate_single_action_fields(sub)
+                if sub_err:
+                    return f"actions[{idx}]: {sub_err}"
+            return None
+        return _validate_single_action_fields(obj)
     except Exception as exc:
         return str(exc)
 

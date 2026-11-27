@@ -2,10 +2,13 @@ import os
 import re
 import signal
 import subprocess
+import sys
+import tempfile
 import time
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 
 BLOCKED_COMMAND_PATTERNS = [
@@ -48,6 +51,7 @@ class CommandResult:
     stderr: str
     duration_sec: float
     timed_out: bool = False
+    sandboxed: bool = False
 
     @property
     def ok(self) -> bool:
@@ -55,7 +59,8 @@ class CommandResult:
 
     def format_for_llm(self, max_chars: int = 14000) -> str:
         status = "TIMEOUT" if self.timed_out else f"EXIT_CODE={self.exit_code}"
-        combined = f"$ {self.command}\n[{status} in {self.duration_sec:.2f}s]\n"
+        sand_str = " [SANDBOXED]" if self.sandboxed else ""
+        combined = f"$ {self.command}\n[{status}{sand_str} in {self.duration_sec:.2f}s]\n"
         if self.stdout.strip():
             combined += f"--- STDOUT ---\n{self.stdout.strip()}\n"
         if self.stderr.strip():
@@ -65,14 +70,15 @@ class CommandResult:
 
 class TerminalExecutor:
     """
-    Workspace-jailed macOS Zsh executor with process-group timeout termination
-    and path/command boundary enforcement.
+    Workspace-jailed macOS Zsh executor with process-group timeout termination,
+    path/command boundary enforcement, and optional kernel-level sandbox-exec.
     """
 
-    def __init__(self, workspace_dir: str | Path, default_timeout: int = 90) -> None:
+    def __init__(self, workspace_dir: str | Path, default_timeout: int = 90, use_kernel_sandbox: bool = True) -> None:
         self.workspace_root = Path(workspace_dir).expanduser().resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.default_timeout = default_timeout
+        self.use_kernel_sandbox = bool(use_kernel_sandbox)
 
     def resolve_safe_path(self, target_path: str | Path) -> Path:
         raw = Path(target_path)
@@ -81,79 +87,117 @@ class TerminalExecutor:
             candidate.relative_to(self.workspace_root)
         except ValueError as exc:
             raise PermissionError(
-                f"Workspace jail violation: '{target_path}' resolves outside '{self.workspace_root}'"
+                f"Workspace jail violation: '{target_path}' resolves outside workspace root '{self.workspace_root}'"
             ) from exc
         return candidate
 
     def validate_command(self, command: str) -> None:
-        cmd = command.strip()
-        if not cmd:
-            raise ValueError("Command cannot be empty.")
+        if not command or not command.strip():
+            raise ValueError("Empty command string rejected.")
+        for pattern in BLOCKED_COMMAND_PATTERNS:
+            if re.search(pattern, command):
+                raise ValueError(f"Command blocked by safety filter pattern: '{pattern}'")
 
-        for pat in BLOCKED_COMMAND_PATTERNS:
-            if re.search(pat, cmd, re.IGNORECASE):
-                raise PermissionError(f"Blocked destructive/system-level command pattern: {cmd}")
+    def is_macos_sandbox_available(self) -> bool:
+        return bool(
+            self.use_kernel_sandbox
+            and sys.platform == "darwin"
+            and Path("/usr/bin/sandbox-exec").is_file()
+        )
 
-        # Block explicit parent-directory traversal escapes
-        if re.search(r"(^|[\s/'\"])(\.\./){2,}", cmd):
-            raise PermissionError(f"Blocked multi-level parent traversal in command: {cmd}")
-
-        # Check explicit absolute file paths referenced in command tokens
-        ws_str = str(self.workspace_root)
-        for token in re.findall(r"(?:^|[\s=:'\"])(/[^\s'\"`;|&<>]+)", cmd):
-            if token == "/":
-                raise PermissionError("Blocked root path '/' reference in shell command.")
-            if token.startswith(ALLOWED_SYSTEM_PREFIXES):
-                continue
-            resolved_tok = str(Path(token).resolve())
-            if not (resolved_tok == ws_str or resolved_tok.startswith(ws_str + os.sep)):
-                raise PermissionError(
-                    f"Workspace jail violation in command: '{token}' is outside '{ws_str}'"
-                )
+    def _build_seatbelt_profile(self) -> str:
+        ws_path = str(self.workspace_root)
+        # Escape backslashes and double quotes for SBPL string literal
+        escaped_ws = ws_path.replace("\\", "\\\\").replace('"', '\\"')
+        return f"""(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+  (subpath "{escaped_ws}")
+  (subpath "/tmp")
+  (subpath "/private/tmp")
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (regex #"^/dev/fd/")
+  (regex #"^/dev/tty")
+)
+"""
 
     def run(
         self,
         command: str,
         timeout: Optional[int] = None,
-        env_extra: Optional[Dict[str, str]] = None,
         max_output_chars: int = 16000,
+        env_extra: Optional[Dict[str, str]] = None,
     ) -> CommandResult:
         self.validate_command(command)
-        eff_timeout = timeout or self.default_timeout
+        eff_timeout = timeout if timeout is not None else self.default_timeout
+
+        shell_bin = "/bin/zsh" if Path("/bin/zsh").exists() else (shutil.which("bash") or "/bin/sh")
 
         env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
         env["PROJECT_WORKSPACE"] = str(self.workspace_root)
         if env_extra:
             env.update(env_extra)
 
-        t0 = time.perf_counter()
-        proc = subprocess.Popen(
-            ["/bin/zsh", "-lc", command],
-            cwd=str(self.workspace_root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            errors="replace",
-            start_new_session=True,
-            env=env,
-        )
+        sandboxed = False
+        profile_file = None
+        cmd_args = []
 
-        timed_out = False
+        if self.is_macos_sandbox_available():
+            try:
+                profile_content = self._build_seatbelt_profile()
+                tf = tempfile.NamedTemporaryFile(mode="w", suffix=".sb", prefix="broutegpt_sb_", delete=False, dir="/private/tmp")
+                tf.write(profile_content)
+                tf.close()
+                profile_file = tf.name
+                env["TMPDIR"] = "/private/tmp"
+                cmd_args = ["/usr/bin/sandbox-exec", "-f", profile_file, shell_bin, "-lc", command]
+                sandboxed = True
+            except Exception:
+                # Fallback gracefully if sandbox file creation fails
+                cmd_args = [shell_bin, "-lc", command]
+                sandboxed = False
+        else:
+            cmd_args = [shell_bin, "-lc", command]
+            sandboxed = False
+
+        t0 = time.perf_counter()
         try:
-            stdout, stderr = proc.communicate(timeout=eff_timeout)
-            exit_code = int(proc.returncode or 0)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            exit_code = -9
+            proc = subprocess.Popen(
+                cmd_args,
+                cwd=str(self.workspace_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                errors="replace",
+                start_new_session=True,
+                env=env,
+            )
+
+            timed_out = False
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            try:
-                stdout, stderr = proc.communicate(timeout=1)
+                stdout, stderr = proc.communicate(timeout=eff_timeout)
+                exit_code = int(proc.returncode or 0)
             except subprocess.TimeoutExpired:
-                stdout, stderr = "", f"Command timed out after {eff_timeout}s and process group was killed."
+                timed_out = True
+                exit_code = -9
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    stdout, stderr = proc.communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    stdout, stderr = "", f"Command timed out after {eff_timeout}s and process group was killed."
+        finally:
+            if profile_file:
+                try:
+                    Path(profile_file).unlink()
+                except Exception:
+                    pass
 
         duration = round(time.perf_counter() - t0, 3)
         return CommandResult(
@@ -163,5 +207,5 @@ class TerminalExecutor:
             stderr=_truncate_middle(stderr or "", max_chars=max_output_chars),
             duration_sec=duration,
             timed_out=timed_out,
+            sandboxed=sandboxed,
         )
-

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .checkpoint_manager import CheckpointManager
-from .code_editor import CodeEditor, parse_agent_action, validate_action_json
+from .code_editor import CodeEditor, normalize_action_batch, parse_agent_action, validate_action_json
 from .condenser import RollingCondenser
 from .event_stream import EventStream
 from .input_inspector import InputInspector
@@ -25,9 +25,9 @@ PLAN_SYSTEM_PROMPT = (
 
 STEP_SYSTEM_PROMPT = """You are an autonomous senior software engineer executing a project Decision Point (DP) inside a macOS terminal workspace with ZERO human interaction.
 
-Respond with ONLY ONE valid JSON action object per turn (no prose outside JSON). Every JSON action MUST include a concise `"thought"` field (1-2 plain sentences explaining what you found from the previous output/error, what bug or task you are addressing, and what file/command this step executes).
+Respond with ONLY valid JSON per turn (no prose outside JSON) — either a single action object (`{"thought": "...", "action": "..."}`) OR a multi-action batch (`{"thought": "...", "actions": [ {...}, {...} ]}`, up to 6 sequential actions per turn, e.g., `write_file` module + `write_file` `verify_dp<k>.py` + `run_shell` to test it in one turn). Sub-actions execute sequentially and halt immediately if any sub-action fails or triggers `dp_complete`. Every response MUST include a concise `"thought"` field (1-2 plain sentences explaining what you found, what bug/task you are addressing, and what this step executes).
 
-Choose strictly from these schemas:
+Choose strictly from these action schemas (used directly or inside `"actions": [...]`):
 1. Write a new or complete file:
    {"thought": "Creating parser.py to load FASTA sequences and compute GC content.", "action": "write_file", "path": "relative/path.py", "content": "full file text..."}
 2. Patch an existing file using surgical SEARCH/REPLACE blocks (preferred for debugging/edits):
@@ -348,8 +348,8 @@ class DPOrchestrator:
                 f"- Mandatory Verification Script: `{verify_script}`\n\n"
                 f"INPUT FILES:\n{input_summary}\n\n"
                 f"CURRENT WORKSPACE REPO MAP:\n{repo_map}\n\n"
-                f"PROJECT RULES:\n{rules_text}\n\n" if rules_text else ""
-                "Choose your next single JSON action (`write_file`, `patch_file`, `read_file`, `list_dir`, `run_shell`, `grep_search`, `glob_files`, or `dp_complete`) and include a concise `thought` explaining what you found and what you are changing or testing."
+                + (f"PROJECT RULES:\n{rules_text}\n\n" if rules_text else "")
+                + "Choose your next single JSON action or action batch (`actions: [...]`) and include a concise `thought` explaining what you found and what you are changing or testing."
             )
 
             raw_reply, used_model = self.router.query_autonomous(
@@ -362,195 +362,239 @@ class DPOrchestrator:
             )
             last_model_used = used_model
             action_obj = parse_agent_action(raw_reply)
-            act = action_obj["action"]
-            thought = str(action_obj.get("thought") or action_obj.get("diagnosis") or "").strip()
+            sub_actions = normalize_action_batch(action_obj)
+            is_batch = len(sub_actions) > 1
+            top_thought = str(action_obj.get("thought") or action_obj.get("diagnosis") or "").strip()
 
-            print(f"[DP {dp_id} | Step {step}/{self.max_steps_per_dp}]")
-            if thought:
-                print(f"  Finding/Plan : {thought}")
+            print(f"[DP {dp_id} | Step {step}/{self.max_steps_per_dp}]" + (f" (batch of {len(sub_actions)} actions)" if is_batch else ""))
+            if top_thought:
+                print(f"  Finding/Plan : {top_thought}")
 
-            act_ev = self.stream.append(
-                "action",
-                json.dumps(action_obj, ensure_ascii=False),
-                dp_index=dp_id,
-                model=used_model,
-            )
+            for batch_idx, sub_action in enumerate(sub_actions):
+                act = sub_action["action"]
+                sub_thought = str(sub_action.get("thought") or sub_action.get("diagnosis") or "").strip()
+                if is_batch:
+                    prefix_msg = f"  [Batch {batch_idx + 1}/{len(sub_actions)} | {act}]"
+                    print(f"{prefix_msg} {sub_thought}" if sub_thought else prefix_msg)
 
-            # Execute action and print live findings
-            if act == "write_file":
-                rel_path = str(action_obj["path"])
-                content = str(action_obj["content"])
-                try:
-                    outcome = self.editor.write_file(rel_path, content)
-                    self.checkpoints.capture(
-                        dp_index=dp_id,
-                        event_id=act_ev.id,
-                        label=f"write:{rel_path}",
-                        model=used_model,
-                    )
-                    if outcome.ok:
-                        consecutive_failures = 0
-                        has_written_code = True
-                        obs_text = outcome.message
-                        print(f"  Created/Wrote: {rel_path} ({len(content.splitlines())} lines) — syntax/static check PASSED")
-                    else:
-                        consecutive_failures += 1
-                        obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
-                        print(f"  Wrote File   : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
-                except Exception as exc:
-                    consecutive_failures += 1
-                    obs_text = f"ERROR writing {rel_path}: {exc}"
-                    print(f"  Write Error  : {rel_path} -> {exc}")
-
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "patch_file":
-                rel_path = str(action_obj["path"])
-                edits = action_obj.get("edits")
-                if not isinstance(edits, list):
-                    edits = [{"search": str(action_obj.get("search", "")), "replace": str(action_obj.get("replace", ""))}]
-                fb = action_obj.get("fallback_content")
-                try:
-                    outcome = self.editor.patch_file(
-                        rel_path,
-                        edits=edits,
-                        fallback_content=str(fb) if fb is not None else None,
-                    )
-                    self.checkpoints.capture(
-                        dp_index=dp_id,
-                        event_id=act_ev.id,
-                        label=f"patch:{rel_path}",
-                        model=used_model,
-                    )
-                    if outcome.ok:
-                        consecutive_failures = 0
-                        obs_text = outcome.message
-                        print(f"  Debug/Patched: {rel_path} ({len(edits)} block(s), {outcome.mode_used}) — static check PASSED")
-                    else:
-                        consecutive_failures += 1
-                        obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
-                        print(f"  Patched File : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
-                except Exception as exc:
-                    consecutive_failures += 1
-                    obs_text = f"ERROR patching {rel_path}: {exc}"
-                    print(f"  Patch Error  : {rel_path} -> {exc}")
-
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "read_file":
-                rel_path = str(action_obj["path"])
-                s_line = int(action_obj.get("start_line") or 1)
-                e_line = int(action_obj.get("end_line") or 2000)
-                try:
-                    obs_text = self.mapper.read_file_numbered(rel_path, start_line=s_line, end_line=e_line)
-                    print(f"  Inspected    : {rel_path} (lines {s_line}-{e_line})")
-                    consecutive_reads += 1
-                    if consecutive_reads >= 4:
-                        obs_text += "\n\n[SYSTEM WARNING]: You have performed multiple consecutive reads. Please apply a patch_file or write_file to make progress."
-                except Exception as exc:
-                    obs_text = f"ERROR reading {rel_path}: {exc}"
-                    print(f"  Read Error   : {rel_path} -> {exc}")
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "grep_search":
-                pattern = str(action_obj["pattern"])
-                rel_path = str(action_obj.get("path") or ".")
-                try:
-                    obs_text = self.mapper.grep_search(pattern, rel_path)
-                    print(f"  Grep Search : pattern='{pattern}' in {rel_path}")
-                except Exception as exc:
-                    obs_text = f"ERROR in grep_search: {exc}"
-                    print(f"  Grep Error  : {exc}")
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "glob_files":
-                pattern = str(action_obj["pattern"])
-                try:
-                    obs_text = self.mapper.glob_files(pattern)
-                    print(f"  Glob Files   : pattern='{pattern}'")
-                except Exception as exc:
-                    obs_text = f"ERROR in glob_files: {exc}"
-                    print(f"  Glob Error   : {exc}")
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "list_dir":
-                rel_path = str(action_obj.get("path") or ".")
-                try:
-                    obs_text = self.mapper.list_dir(rel_path)
-                    print(f"  Listed Dir   : {rel_path}")
-                except Exception as exc:
-                    obs_text = f"ERROR listing {rel_path}: {exc}"
-                    print(f"  List Error   : {rel_path} -> {exc}")
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "run_shell":
-                cmd = str(action_obj["command"])
-                try:
-                    res = self.executor.run(cmd)
-                    self.checkpoints.capture(
-                        dp_index=dp_id,
-                        event_id=act_ev.id,
-                        label=f"shell:{cmd[:40]}",
-                        model=used_model,
-                    )
-                    raw_out = "\n".join(part for part in (res.stdout.strip(), res.stderr.strip()) if part)
-                    snippet = _format_console_snippet(raw_out)
-                    if res.ok:
-                        consecutive_failures = 0
-                        consecutive_reads = 0
-                        obs_text = f"SHELL PASSED:\n{res.format_for_llm()}"
-                        print(f"  Executed     : `{cmd}` -> PASSED (exit=0, {res.duration_sec}s)")
-                        print(f"  Output       :\n    {snippet}")
-                    else:
-                        consecutive_failures += 1
-                        obs_text = f"SHELL FAILED:\n{res.format_for_llm()}\nAnalyze the traceback and fix the root cause."
-                        print(f"  Executed     : `{cmd}` -> FAILED (exit={res.exit_code}, {res.duration_sec}s)")
-                        print(f"  Problem Found:\n    {snippet}")
-                except Exception as exc:
-                    consecutive_failures += 1
-                    obs_text = f"SHELL BLOCKED/ERROR: {exc}"
-                    print(f"  Shell Error  : `{cmd}` -> {exc}")
-
-                self.stream.append("observation", obs_text, dp_index=dp_id)
-
-            elif act == "dp_complete":
-                summary = str(action_obj.get("summary") or f"DP {dp_id} complete")
-                passed, gate_log = self._run_regression_suite(up_to_dp=dp_id)
-                if passed:
-                    ver_ev = self.stream.append(
-                        "dp_verified",
-                        f"DP {dp_id} ({title}) VERIFIED.\nSummary: {summary}\n{gate_log}",
-                        dp_index=dp_id,
-                        model=used_model,
-                    )
-                    ckpt = self.checkpoints.commit_verified_dp(
-                        dp_index=dp_id,
-                        title=title,
-                        event_id=ver_ev.id,
-                        model=used_model,
-                    )
-                    print(f"  Gate Check   : VERIFIED (`{verify_script}` + regression suite PASSED)")
-                    print(f"  DP Summary   : {summary} [Checkpoint #{ckpt.step_id}]\n")
-                    return {
-                        "dp_id": dp_id,
-                        "title": title,
-                        "status": "verified",
-                        "steps_taken": step,
-                        "verified_by": used_model,
-                        "checkpoint_step": ckpt.step_id,
-                        "summary": summary,
-                    }
-
-                consecutive_failures += 1
-                err_snippet = _format_console_snippet(gate_log)
-                print("  Gate Check   : REJECTED — verification script failed:")
-                print(f"    {err_snippet}")
-                self.stream.append(
-                    "observation",
-                    f"DP_COMPLETE REJECTED — Verification/Regression Gate Failed:\n{gate_log}\n"
-                    f"Debug and fix the failing check before calling `dp_complete` again.",
+                ev_meta = {"batch_index": batch_idx, "batch_size": len(sub_actions)} if is_batch else None
+                act_ev = self.stream.append(
+                    "action",
+                    json.dumps(sub_action, ensure_ascii=False),
                     dp_index=dp_id,
+                    model=used_model,
+                    meta=ev_meta,
                 )
+
+                sub_failed = False
+
+                # Execute sub-action and print live findings
+                if act == "write_file":
+                    rel_path = str(sub_action["path"])
+                    content = str(sub_action["content"])
+                    try:
+                        outcome = self.editor.write_file(rel_path, content)
+                        self.checkpoints.capture(
+                            dp_index=dp_id,
+                            event_id=act_ev.id,
+                            label=f"write:{rel_path}",
+                            model=used_model,
+                        )
+                        if outcome.ok:
+                            consecutive_failures = 0
+                            has_written_code = True
+                            obs_text = outcome.message
+                            print(f"  Created/Wrote: {rel_path} ({len(content.splitlines())} lines) — syntax/static check PASSED")
+                        else:
+                            consecutive_failures += 1
+                            sub_failed = True
+                            obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
+                            print(f"  Wrote File   : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
+                    except Exception as exc:
+                        consecutive_failures += 1
+                        sub_failed = True
+                        obs_text = f"ERROR writing {rel_path}: {exc}"
+                        print(f"  Write Error  : {rel_path} -> {exc}")
+
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "patch_file":
+                    rel_path = str(sub_action["path"])
+                    edits = sub_action.get("edits")
+                    if not isinstance(edits, list):
+                        edits = [{"search": str(sub_action.get("search", "")), "replace": str(sub_action.get("replace", ""))}]
+                    fb = sub_action.get("fallback_content")
+                    try:
+                        outcome = self.editor.patch_file(
+                            rel_path,
+                            edits=edits,
+                            fallback_content=str(fb) if fb is not None else None,
+                        )
+                        self.checkpoints.capture(
+                            dp_index=dp_id,
+                            event_id=act_ev.id,
+                            label=f"patch:{rel_path}",
+                            model=used_model,
+                        )
+                        if outcome.ok:
+                            consecutive_failures = 0
+                            obs_text = outcome.message
+                            print(f"  Debug/Patched: {rel_path} ({len(edits)} block(s), {outcome.mode_used}) — static check PASSED")
+                        else:
+                            consecutive_failures += 1
+                            sub_failed = True
+                            obs_text = f"ERROR: {outcome.message}\nFix this syntax/static error immediately."
+                            print(f"  Patched File : {rel_path} — STATIC CHECK FAILED:\n    {outcome.static_check.error}")
+                    except Exception as exc:
+                        consecutive_failures += 1
+                        sub_failed = True
+                        obs_text = f"ERROR patching {rel_path}: {exc}"
+                        print(f"  Patch Error  : {rel_path} -> {exc}")
+
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "read_file":
+                    rel_path = str(sub_action["path"])
+                    s_line = int(sub_action.get("start_line") or 1)
+                    e_line = int(sub_action.get("end_line") or 2000)
+                    try:
+                        obs_text = self.mapper.read_file_numbered(rel_path, start_line=s_line, end_line=e_line)
+                        print(f"  Inspected    : {rel_path} (lines {s_line}-{e_line})")
+                        consecutive_reads += 1
+                        if consecutive_reads >= 4:
+                            obs_text += "\n\n[SYSTEM WARNING]: You have performed multiple consecutive reads. Please apply a patch_file or write_file to make progress."
+                    except Exception as exc:
+                        sub_failed = True
+                        obs_text = f"ERROR reading {rel_path}: {exc}"
+                        print(f"  Read Error   : {rel_path} -> {exc}")
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "grep_search":
+                    pattern = str(sub_action["pattern"])
+                    rel_path = str(sub_action.get("path") or ".")
+                    try:
+                        obs_text = self.mapper.grep_search(pattern, rel_path)
+                        print(f"  Grep Search : pattern='{pattern}' in {rel_path}")
+                    except Exception as exc:
+                        sub_failed = True
+                        obs_text = f"ERROR in grep_search: {exc}"
+                        print(f"  Grep Error  : {exc}")
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "glob_files":
+                    pattern = str(sub_action["pattern"])
+                    try:
+                        obs_text = self.mapper.glob_files(pattern)
+                        print(f"  Glob Files   : pattern='{pattern}'")
+                    except Exception as exc:
+                        sub_failed = True
+                        obs_text = f"ERROR in glob_files: {exc}"
+                        print(f"  Glob Error   : {exc}")
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "list_dir":
+                    rel_path = str(sub_action.get("path") or ".")
+                    try:
+                        obs_text = self.mapper.list_dir(rel_path)
+                        print(f"  Listed Dir   : {rel_path}")
+                    except Exception as exc:
+                        sub_failed = True
+                        obs_text = f"ERROR listing {rel_path}: {exc}"
+                        print(f"  List Error   : {rel_path} -> {exc}")
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "run_shell":
+                    cmd = str(sub_action["command"])
+                    try:
+                        res = self.executor.run(cmd)
+                        self.checkpoints.capture(
+                            dp_index=dp_id,
+                            event_id=act_ev.id,
+                            label=f"shell:{cmd[:40]}",
+                            model=used_model,
+                        )
+                        raw_out = "\n".join(part for part in (res.stdout.strip(), res.stderr.strip()) if part)
+                        snippet = _format_console_snippet(raw_out)
+                        if res.ok:
+                            consecutive_failures = 0
+                            consecutive_reads = 0
+                            obs_text = f"SHELL PASSED:\n{res.format_for_llm()}"
+                            print(f"  Executed     : `{cmd}` -> PASSED (exit=0, {res.duration_sec}s)")
+                            print(f"  Output       :\n    {snippet}")
+                        else:
+                            consecutive_failures += 1
+                            sub_failed = True
+                            obs_text = f"SHELL FAILED:\n{res.format_for_llm()}\nAnalyze the traceback and fix the root cause."
+                            print(f"  Executed     : `{cmd}` -> FAILED (exit={res.exit_code}, {res.duration_sec}s)")
+                            print(f"  Problem Found:\n    {snippet}")
+                    except Exception as exc:
+                        consecutive_failures += 1
+                        sub_failed = True
+                        obs_text = f"SHELL BLOCKED/ERROR: {exc}"
+                        print(f"  Shell Error  : `{cmd}` -> {exc}")
+
+                    if sub_failed and is_batch and batch_idx + 1 < len(sub_actions):
+                        obs_text += f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed."
+                    self.stream.append("observation", obs_text, dp_index=dp_id)
+
+                elif act == "dp_complete":
+                    summary = str(sub_action.get("summary") or f"DP {dp_id} complete")
+                    passed, gate_log = self._run_regression_suite(up_to_dp=dp_id)
+                    if passed:
+                        ver_ev = self.stream.append(
+                            "dp_verified",
+                            f"DP {dp_id} ({title}) VERIFIED.\nSummary: {summary}\n{gate_log}",
+                            dp_index=dp_id,
+                            model=used_model,
+                        )
+                        ckpt = self.checkpoints.commit_verified_dp(
+                            dp_index=dp_id,
+                            title=title,
+                            event_id=ver_ev.id,
+                            model=used_model,
+                        )
+                        print(f"  Gate Check   : VERIFIED (`{verify_script}` + regression suite PASSED)")
+                        print(f"  DP Summary   : {summary} [Checkpoint #{ckpt.step_id}]\n")
+                        return {
+                            "dp_id": dp_id,
+                            "title": title,
+                            "status": "verified",
+                            "steps_taken": step,
+                            "verified_by": used_model,
+                            "checkpoint_step": ckpt.step_id,
+                            "summary": summary,
+                        }
+
+                    consecutive_failures += 1
+                    sub_failed = True
+                    err_snippet = _format_console_snippet(gate_log)
+                    print("  Gate Check   : REJECTED — verification script failed:")
+                    print(f"    {err_snippet}")
+                    halt_note = f"\n[BATCH HALTED]: Stopped after action {batch_idx + 1}/{len(sub_actions)} failed." if (is_batch and batch_idx + 1 < len(sub_actions)) else ""
+                    self.stream.append(
+                        "observation",
+                        f"DP_COMPLETE REJECTED — Verification/Regression Gate Failed:\n{gate_log}\n"
+                        f"Debug and fix the failing check before calling `dp_complete` again.{halt_note}",
+                        dp_index=dp_id,
+                    )
+
+                if sub_failed:
+                    if is_batch and batch_idx + 1 < len(sub_actions):
+                        print(f"  Batch Halted : Skipped remaining {len(sub_actions) - (batch_idx + 1)} sub-action(s) after failure.")
+                    break
+
 
             # Auto-rollback files to DP start once if debug branch thrashes >= 4 consecutive failures
             if consecutive_failures >= 4 and not did_auto_rollback:
