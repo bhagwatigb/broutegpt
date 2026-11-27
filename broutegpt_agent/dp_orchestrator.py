@@ -40,6 +40,10 @@ Choose strictly from these schemas:
    {"thought": "Running verify_dp1.py to verify parser outputs against sample_inputs.", "action": "run_shell", "command": "python3 verify_dp1.py"}
 6. Declare the current DP complete ONLY AFTER `verify_dp<k>.py` exists and passed with exit code 0:
    {"thought": "verify_dp1.py passed all assertions with exit code 0; marking DP 1 complete.", "action": "dp_complete", "summary": "concise summary of what was built and verified"}
+7. Search file contents with a regex pattern:
+   {"thought": "Searching for 'def foo' across the repo to locate the function.", "action": "grep_search", "pattern": "def foo", "path": ".", "max_matches": 50}
+8. Glob workspace files by pattern:
+   {"thought": "Listing all Python files to plan edits.", "action": "glob_files", "pattern": "**/*.py", "max_results": 100}
 
 Rules:
 - Never ask questions or wait for confirmation.
@@ -96,6 +100,27 @@ def _format_console_snippet(text: str, max_lines: int = 8, max_chars: int = 650)
 
 
 class DPOrchestrator:
+    def _load_project_rules(self) -> str:
+        """Load BROUTEGPT.md, CLAUDE.md, and user home BROUTEGPT.md if they exist.
+        Returns concatenated rules text or empty string.
+        """
+        from pathlib import Path
+        rule_paths = [
+            self.project_root / "BROUTEGPT.md",
+            self.project_root / "CLAUDE.md",
+            Path.home() / ".broutegpt" / "BROUTEGPT.md",
+        ]
+        texts = []
+        for p in rule_paths:
+            try:
+                if p.is_file():
+                    texts.append(p.read_text(encoding="utf-8"))
+            except Exception:
+                # ignore unreadable files
+                continue
+        return "\n\n".join(texts) if texts else ""
+
+    # existing methods continue...
     """
     Zero-question autonomous Decision-Point builder:
       - Stage 0: Stages external input files into `sample_inputs/`, inspects schemas,
@@ -295,6 +320,8 @@ class DPOrchestrator:
         last_model_used = "system"
         did_auto_rollback = False
         has_written_code = False
+        consecutive_reads = 0
+        rules_text = self._load_project_rules()
 
         for step in range(1, self.max_steps_per_dp + 1):
             tier = self._select_step_tier(
@@ -321,7 +348,8 @@ class DPOrchestrator:
                 f"- Mandatory Verification Script: `{verify_script}`\n\n"
                 f"INPUT FILES:\n{input_summary}\n\n"
                 f"CURRENT WORKSPACE REPO MAP:\n{repo_map}\n\n"
-                "Choose your next single JSON action (`write_file`, `patch_file`, `read_file`, `list_dir`, `run_shell`, or `dp_complete`) and include a concise `thought` explaining what you found and what you are changing or testing."
+                f"PROJECT RULES:\n{rules_text}\n\n" if rules_text else ""
+                "Choose your next single JSON action (`write_file`, `patch_file`, `read_file`, `list_dir`, `run_shell`, `grep_search`, `glob_files`, or `dp_complete`) and include a concise `thought` explaining what you found and what you are changing or testing."
             )
 
             raw_reply, used_model = self.router.query_autonomous(
@@ -416,9 +444,33 @@ class DPOrchestrator:
                 try:
                     obs_text = self.mapper.read_file_numbered(rel_path, start_line=s_line, end_line=e_line)
                     print(f"  Inspected    : {rel_path} (lines {s_line}-{e_line})")
+                    consecutive_reads += 1
+                    if consecutive_reads >= 4:
+                        obs_text += "\n\n[SYSTEM WARNING]: You have performed multiple consecutive reads. Please apply a patch_file or write_file to make progress."
                 except Exception as exc:
                     obs_text = f"ERROR reading {rel_path}: {exc}"
                     print(f"  Read Error   : {rel_path} -> {exc}")
+                self.stream.append("observation", obs_text, dp_index=dp_id)
+
+            elif act == "grep_search":
+                pattern = str(action_obj["pattern"])
+                rel_path = str(action_obj.get("path") or ".")
+                try:
+                    obs_text = self.mapper.grep_search(pattern, rel_path)
+                    print(f"  Grep Search : pattern='{pattern}' in {rel_path}")
+                except Exception as exc:
+                    obs_text = f"ERROR in grep_search: {exc}"
+                    print(f"  Grep Error  : {exc}")
+                self.stream.append("observation", obs_text, dp_index=dp_id)
+
+            elif act == "glob_files":
+                pattern = str(action_obj["pattern"])
+                try:
+                    obs_text = self.mapper.glob_files(pattern)
+                    print(f"  Glob Files   : pattern='{pattern}'")
+                except Exception as exc:
+                    obs_text = f"ERROR in glob_files: {exc}"
+                    print(f"  Glob Error   : {exc}")
                 self.stream.append("observation", obs_text, dp_index=dp_id)
 
             elif act == "list_dir":
@@ -445,6 +497,7 @@ class DPOrchestrator:
                     snippet = _format_console_snippet(raw_out)
                     if res.ok:
                         consecutive_failures = 0
+                        consecutive_reads = 0
                         obs_text = f"SHELL PASSED:\n{res.format_for_llm()}"
                         print(f"  Executed     : `{cmd}` -> PASSED (exit=0, {res.duration_sec}s)")
                         print(f"  Output       :\n    {snippet}")
@@ -535,9 +588,15 @@ class DPOrchestrator:
         if resume and self.plan_path.exists():
             plan = json.loads(self.plan_path.read_text(encoding="utf-8"))
             self.stream.append("note", "Resumed existing dp_plan.json run.", dp_index=0)
+            rules_text = self._load_project_rules()
+            if rules_text:
+                self.stream.append("rules", rules_text, dp_index=0)
             print("[Resume] Loaded existing dp_plan.json")
         else:
             self.stream.append("goal", f"{goal}\n\nStaged Inputs:\n{input_summary}", dp_index=0)
+            rules_text = self._load_project_rules()
+            if rules_text:
+                self.stream.append("rules", rules_text, dp_index=0)
             plan = self._generate_master_plan(goal, input_summary)
             self.stream.append(
                 "plan",
@@ -562,6 +621,19 @@ class DPOrchestrator:
             completed_results.append(res)
 
         elapsed = round(time.perf_counter() - t0, 2)
+
+        # Aggregate per-DP token telemetry from the router call log.
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        llm_calls = 0
+        for entry in getattr(self.router, "call_log", []) or []:
+            if not isinstance(entry, dict) or entry.get("status") != "ok":
+                continue
+            llm_calls += 1
+            total_prompt_tokens += int(entry.get("prompt_tokens") or 0)
+            total_completion_tokens += int(entry.get("completion_tokens") or 0)
+        total_tokens = total_prompt_tokens + total_completion_tokens
+
         summary_report = {
             "project_dir": str(self.project_root),
             "project_name": plan.get("project_name", self.project_root.name),
@@ -570,6 +642,11 @@ class DPOrchestrator:
             "results": completed_results,
             "duration_sec": elapsed,
             "latest_checkpoint": self.checkpoints.records[-1].step_id if self.checkpoints.records else 0,
+            "total_prompt_tokens": total_prompt_tokens,
+            "total_completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
+            "llm_calls": llm_calls,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         (self.state_dir / "build_report.json").write_text(
             json.dumps(summary_report, indent=2, ensure_ascii=False),

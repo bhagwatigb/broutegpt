@@ -146,6 +146,9 @@ def run_agent_cli(
     print(f"  Entrypoint  : {summary['entrypoint'] or 'see repo files'}")
     print(f"  Verified DPs: {len(summary['results'])}/{summary['total_dps']} in {summary['duration_sec']}s")
     print(f"  Checkpoint  : Step #{summary['latest_checkpoint']} (run `--timeline --project-dir {project_root}` to inspect)")
+    print(f"  Token Usage : {summary.get('total_tokens', 0)} total tokens "
+          f"({summary.get('total_prompt_tokens', 0)} prompt + {summary.get('total_completion_tokens', 0)} completion) "
+          f"across {summary.get('llm_calls', 0)} LLM call(s)")
     print("============================================================\n")
     return summary
 

@@ -215,3 +215,100 @@ class RepoMapper:
             entries.append(f"  {tag:<10} {item.name}")
         return f"Directory '{rel_path}':\n" + ("\n".join(entries) if entries else "  (empty)")
 
+    def grep_search(self, pattern: str, rel_path: str = ".", max_matches: int = 50) -> str:
+        """Search workspace files for a regex, returning 'relative/path.py:LINE: text' lines."""
+        try:
+            target = self.executor.resolve_safe_path(rel_path)
+        except Exception as exc:
+            raise ValueError(f"Path outside workspace jail: {rel_path}") from exc
+        if not target.exists():
+            raise FileNotFoundError(f"Path not found in workspace: {rel_path}")
+
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"Invalid regex pattern: {exc}") from exc
+
+        files = self._iter_workspace_files()
+        if target.is_file():
+            files = [target] if target in files else []
+        else:
+            files = [f for f in files if f.is_relative_to(target)]
+
+        matches: List[str] = []
+
+        def _scan(fpath: Path, text: str) -> bool:
+            rel = str(fpath.relative_to(self.workspace_root))
+            for idx, line in enumerate(text.splitlines(), 1):
+                if re.search(pattern, line):
+                    matches.append(f"{rel}:{idx}: {line}")
+                    if len(matches) >= max_matches:
+                        return True
+            return False
+
+        import shutil
+        import subprocess
+
+        rg = shutil.which("rg")
+        if rg:
+            try:
+                result = subprocess.run(
+                    [rg, "--line-number", "--no-heading", "--color", "never", pattern, str(target)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        parts = line.split(":", 2)
+                        if len(parts) == 3:
+                            abs_path = Path(parts[0])
+                            try:
+                                rel = str(abs_path.relative_to(self.workspace_root))
+                            except ValueError:
+                                continue
+                            rel_parts = abs_path.relative_to(self.workspace_root).parts
+                            if any(p in IGNORE_DIRS or p.startswith(".") for p in rel_parts):
+                                continue
+                            matches.append(f"{rel}:{parts[1]}: {parts[2]}")
+                        if len(matches) >= max_matches:
+                            break
+            except Exception:
+                rg = None
+
+        if not rg:
+            for fpath in files:
+                if len(matches) >= max_matches:
+                    break
+                try:
+                    text = fpath.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    continue
+                if _scan(fpath, text):
+                    break
+
+        if not matches:
+            return "No matches found"
+        return "\n".join(matches)
+
+    def glob_files(self, pattern: str, max_results: int = 100) -> str:
+        """Return sorted workspace-relative paths matching pattern (skips ignored/hidden)."""
+        results: List[str] = []
+        try:
+            for path in self.workspace_root.glob(pattern):
+                if not path.is_file():
+                    continue
+                rel_parts = path.relative_to(self.workspace_root).parts
+                if any(
+                    part in IGNORE_DIRS or part.startswith(".") or part.endswith(".egg-info")
+                    for part in rel_parts
+                ):
+                    continue
+                results.append(str(path.relative_to(self.workspace_root)))
+                if len(results) >= max_results:
+                    break
+        except Exception:
+            pass
+        results.sort()
+        return "\n".join(results) if results else "No matches found"
+

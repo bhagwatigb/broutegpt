@@ -17,6 +17,8 @@ VALID_ACTIONS = {
     "read_file",
     "list_dir",
     "run_shell",
+    "grep_search",
+    "glob_files",
     "dp_complete",
 }
 
@@ -135,6 +137,9 @@ def validate_action_json(raw_response: str) -> Optional[str]:
         elif act == "run_shell":
             if not str(obj.get("command") or "").strip():
                 return "run_shell requires non-empty 'command'"
+        elif act in ("grep_search", "glob_files"):
+            if not str(obj.get("pattern") or "").strip():
+                return f"{act} requires non-empty 'pattern'"
         elif act == "dp_complete":
             if not str(obj.get("summary") or "").strip():
                 return "dp_complete requires 'summary'"

@@ -30,7 +30,7 @@ class RollingCondenser:
     def __init__(
         self,
         state_dir: str | Path,
-        keep_tail_events: int = 8,
+        keep_tail_events: int = 18,
         condense_batch_min: int = 4,
     ) -> None:
         self.state_dir = Path(state_dir).expanduser().resolve()
@@ -130,12 +130,11 @@ class RollingCondenser:
         self._save_cache()
         return summary_text.strip()
 
-    def _format_event_turn(self, ev: AgentEvent, max_chars: int = 32000) -> Dict[str, str]:
+    def _format_event_turn(self, ev: AgentEvent, max_chars: int = 28000) -> Dict[str, str]:
         role = "assistant" if ev.kind == "action" else "user"
         header = f"[Event #{ev.id} | DP {ev.dp_index} | {ev.kind.upper()}" + (f" | {ev.model}]" if ev.model else "]")
         body = _clip_text(ev.content, max_chars)
         return {"role": role, "content": f"{header}\n{body}"}
-
 
     def compile_history(
         self,
@@ -164,6 +163,11 @@ class RollingCondenser:
         if goal_ev is not None:
             pinned_ids.add(goal_ev.id)
             head_events.append(goal_ev)
+
+        rules_event = stream.latest_by_kind("rules")
+        if rules_event is not None and rules_event.id not in pinned_ids:
+            pinned_ids.add(rules_event.id)
+            head_events.append(rules_event)
 
         plan_ev = stream.latest_by_kind("plan")
         if plan_ev is not None and plan_ev.id not in pinned_ids:
@@ -212,7 +216,7 @@ class RollingCondenser:
                     coalesced.append(dict(msg))
             return coalesced
 
-        raw_candidate = _assemble(head_events, "", middle_slice + tail_slice, per_item_chars=32000)
+        raw_candidate = _assemble(head_events, "", middle_slice + tail_slice, per_item_chars=3500)
         raw_tokens = sum(_estimate_text_tokens(m["content"]) for m in raw_candidate)
 
         condensed_summary = ""
@@ -227,7 +231,7 @@ class RollingCondenser:
             active_tail = middle_slice + tail_slice
 
         # Progressive budget-fit loop so even tight-context fallback models never overflow
-        per_item_chars = 32000
+        per_item_chars = 3500
         compiled = _assemble(head_events, condensed_summary, active_tail, per_item_chars=per_item_chars)
         est_tokens = sum(_estimate_text_tokens(m["content"]) for m in compiled)
 

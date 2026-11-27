@@ -10,6 +10,7 @@ from broutegpt import (
     FreeLLMRouter,
     _deep_reasoning_score,
     _estimate_model_tps,
+    _estimate_text_tokens,
     _is_deep_reasoning_model,
     _sort_models,
     _sort_models_by_speed,
@@ -321,12 +322,17 @@ class CloudFirstRouter:
                         raise ValueError(f"Validator rejected output: {val_err}")
 
                 elapsed = round(time.perf_counter() - t0, 2)
+                hist_text = "\n".join(m.get("content", "") for m in (history or []))
+                p_tokens = _estimate_text_tokens(f"{system_prompt or ''}\n{hist_text}\n{prompt}")
+                c_tokens = _estimate_text_tokens(text)
                 self.call_log.append({
                     "timestamp": time.time(),
                     "stage": stage_label,
                     "model": f"{prov}:{mid}",
                     "status": "ok",
                     "latency_sec": elapsed,
+                    "prompt_tokens": p_tokens,
+                    "completion_tokens": c_tokens,
                 })
 
                 # Erase all transient routing/fallback status text and print only the winning model
