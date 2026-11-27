@@ -13,4 +13,5 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
-
+workspace
+.free_models_cache.json
