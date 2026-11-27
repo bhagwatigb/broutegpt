@@ -1,42 +1,12 @@
-Build "TabDisplay", a complete, zero-cost, ultra-low-latency wired USB extended display software suite that turns a Lenovo Tab M10 (Android 10, Micro-USB 2.0 port) into a native 1:1 extended touchscreen monitor for an Apple Silicon Mac (MacBook Air M1, macOS).
+Build "TabDisplay", a zero-cost, ultra-low-latency wired USB extended touchscreen display suite pairing an Apple Silicon Mac (macOS 13+) with a Lenovo Tab M10 (Android 10, Micro-USB 2.0) at exact 1:1 native landscape pixel resolution.
 
 ====================================================================
-1. CORE ARCHITECTURAL REQUIREMENTS & ZERO-COMPROMISE CONSTRAINTS
-====================================================================
-- Transport: Wired USB only via ADB socket bridging (`adb forward tcp:5555 localabstract:tabdisplay`) with `TCP_NODELAY = 1` on both endpoints. No Wi-Fi, no Bluetooth, no HTTP/WebSockets, no paid third-party SDKs.
-- Native 1:1 Resolution (Zero Scaling Blur): Dynamically detect the connected Tab M10 physical resolution via `adb shell wm size` (supporting both 1280x800 HD and 1920x1200 FHD panels in landscape orientation where width > height) and create a native macOS virtual display at that exact pixel resolution at 60 Hz.
-- Mac M1 Host (`mac_host/` - Swift Package Manager CLI `TabDisplayHost`):
-  1. `VirtualDisplayManager.swift` + Objective-C bridging/runtime wrapper (`CGVirtualDisplay`, `CGVirtualDisplayDescriptor`, `CGVirtualDisplaySettings`, `CGVirtualDisplayMode`) to register a hardware-backed macOS virtual monitor at exact native landscape dimensions (plus optional `--hidpi` 2x backing mode).
-  2. `ScreenCaptureEncoder.swift`: Attach `ScreenCaptureKit` (`SCStream`) directly to the virtual display's GPU `IOSurface` frames (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, 60 FPS, `queueDepth = 2`, `showsCursor = true`) and pipe them into a real-time `VideoToolbox` (`VTCompressionSession`) H.264 High Profile encoder (`RealTime = true`, `AllowFrameReordering = false` to eliminate B-frame buffering delay, default bitrate 20 Mbps, `MaxKeyFrameInterval = 60`, Annex-B start codes `0x00 0x00 0x01` / `0x00 0x00 0x00 0x01`, prepending SPS/PPS on every IDR keyframe, plus on-demand `kVTEncodeFrameOptionKey_ForceKeyFrame` support).
-  3. `USBBridgeClient.swift`: Connect to `127.0.0.1:5555` over the ADB forward tunnel, set `TCP_NODELAY = 1` and `SO_NOSIGPIPE = 1`, stream downlink video packets on a dedicated send queue, and read uplink 9-byte touch packets concurrently. Trigger an immediate IDR keyframe upon socket connection.
-  4. `TouchInjector.swift`: Map normalized `(normX, normY)` coordinates `[0.0, 1.0]` to `CGDisplayBounds(virtualDisplayID)` and inject low-latency native macOS pointer, drag, right-click, and scroll wheel events via `CGEvent`.
-  5. `main.swift`: CLI supporting `--width <int>`, `--height <int>`, `--fps <int>` (default 60), `--bitrate <int>` (default 20000000), `--port <int>` (default 5555), `--hidpi`, `--self-test-display` (registers virtual display, verifies active display bounds, exits 0), `--self-test-encode <seconds>` (captures & encodes frames headless, prints FPS, NAL counts, and average encode ms, exits 0), and live bridge mode.
-- Android 10 Client (`android_client/` - Standalone Gradle + Kotlin project built headlessly via CLI, `minSdk 26`, `targetSdk 29`, `compileSdk 30`):
-  1. `MainActivity.kt`: Sticky immersive fullscreen (`SYSTEM_UI_FLAG_IMMERSIVE_STICKY | FULLSCREEN | HIDE_NAVIGATION | LAYOUT_STABLE`), `FLAG_KEEP_SCREEN_ON`, locked `sensorLandscape`, full-bleed `SurfaceView` with a minimal auto-hiding connection status badge.
-  2. `UsbSocketServer.kt`: Background thread running `LocalServerSocket("tabdisplay")` (`localabstract:tabdisplay`), reading length-prefixed Annex-B H.264 packets with preallocated reusable byte buffers (zero per-frame GC churn) and feeding `HardwareVideoDecoder`.
-  3. `HardwareVideoDecoder.kt`: Configure `MediaCodec.createDecoderByType("video/avc")` directly with `SurfaceView.holder.surface` (zero-copy GPU surface output). Apply Qualcomm Snapdragon low-latency decoder keys (`vendor.qti-ext-dec-low-latency.enable = 1`, `low-latency = 1`, `max-bframes = 0`) inside a safe `try/catch` block before `codec.configure(...)`. Feed SPS/PPS with `BUFFER_FLAG_CODEC_CONFIG` and render frames immediately with `releaseOutputBuffer(outIndex, true)`.
-  4. `TouchForwarder.kt`: High-priority `OnTouchListener` (`Process.THREAD_PRIORITY_URGENT_AUDIO`) on `SurfaceView`, normalizing touch coordinates `(x / width, y / height)` clamped to `[0.0, 1.0]` and flushing 9-byte binary packets immediately to the socket `OutputStream` (supporting single-finger `DOWN`, `MOVE`, `UP`, two-finger `SCROLL` delta, and long-press / two-finger tap `RIGHT_CLICK`).
-- Unified Python 3 Launcher (`tabdisplay.py` at project root):
-  - Detects connected Android device via `adb devices`, queries native landscape resolution via `adb shell wm size` (ensuring `width > height`), checks USB connection speed, sets up `adb forward tcp:5555 localabstract:tabdisplay`, launches `com.tabdisplay.client/.MainActivity`, starts `TabDisplayHost` with matching native dimensions, prints live FPS/bitrate/encode telemetry, and automatically recovers/reconnects if the USB cable is unplugged and replugged.
-
-====================================================================
-2. EXACT BINARY WIRE PROTOCOL (MUST MATCH ON SWIFT & KOTLIN SIDES)
-====================================================================
-- Downlink (Mac Host -> Android Client):
-  - Bytes 0..3: `uint32` big-endian payload byte length `N` (excludes the 12-byte header)
-  - Bytes 4..11: `uint64` big-endian monotonic timestamp in nanoseconds
-  - Bytes 12..(12+N-1): Raw Annex-B H.264 NAL unit bytes (SPS/PPS + IDR or P-slice)
-- Uplink (Android Client -> Mac Host, fixed 9-byte packet):
-  - Byte 0: `uint8` event code (`0x01` = DOWN, `0x02` = MOVE, `0x03` = UP, `0x04` = SCROLL, `0x05` = RIGHT_CLICK)
-  - Bytes 1..4: `float32` big-endian `normX` (`[0.0, 1.0]` for pointer events, or horizontal scroll delta `dx` for `0x04`)
-  - Bytes 5..8: `float32` big-endian `normY` (`[0.0, 1.0]` for pointer events, or vertical scroll delta `dy` for `0x04`)
-
-====================================================================
-3. REPOSITORY LAYOUT
+ARCHITECTURE & REPOSITORY LAYOUT
 ====================================================================
 tabdisplay/
-├── tabdisplay.py
+├── BROUTEGPT.md
 ├── README.md
+├── tabdisplay.py
 ├── mac_host/
 │   ├── Package.swift
 │   └── Sources/
@@ -65,31 +35,51 @@ tabdisplay/
                 └── TouchForwarder.kt
 
 ====================================================================
-4. MANDATORY 6 DECISION POINTS & VERIFICATION GATES
+5 DECISION POINTS & VERIFICATION GATES
 ====================================================================
-Execute this project strictly across 6 sequential Decision Points:
 
-- DP 1: Toolchain Verification, Device Discovery & Project Scaffolding
-  - Deliverables: Complete directory skeleton (`mac_host/`, `android_client/`), `tabdisplay.py` supporting `--probe` (checks `swift`, `adb`, Java/Android SDK, queries `adb devices`, `adb shell wm size` normalized to landscape `width > height`, and USB speed).
-  - Verification (`verify_dp1.py`): Assert `swift --version` and `adb version` succeed, directory skeleton exists, and `python3 tabdisplay.py --probe --json` outputs valid JSON with detected toolchain paths and tablet resolution (defaulting cleanly to `1280x800` if no device is attached during offline check, or asserting exact connected device resolution when authorized).
+- DP 1: Project Scaffolding, Device Probe & Real CGVirtualDisplay Mac Virtual Monitor
+  - Build:
+    1. Create directory structure (`mac_host/Sources/CVirtualDisplay/include`, `mac_host/Sources/TabDisplayHost`, `android_client/app/src/main/java/com/tabdisplay/client`, `android_client/app/src/main/res/layout`).
+    2. Create `tabdisplay.py` with `--probe --json` that detects `swift`, `adb`, `java`, `gradle`, `ANDROID_HOME`, connected ADB device serials, and normalized landscape resolution via `adb shell wm size` (`width > height`, defaulting cleanly to `1280x800` if no device is attached).
+    3. Create `mac_host/Package.swift` (macOS 13+, linking `CoreGraphics`, `ScreenCaptureKit`, `VideoToolbox`, `CoreMedia`, `CoreVideo`, `ApplicationServices`), `CGVirtualDisplayPrivate.h`, `shim.m` (using `<objc/message.h>` runtime `objc_msgSend` to instantiate real `CGVirtualDisplayDescriptor`, `CGVirtualDisplayMode`, `CGVirtualDisplaySettings`, and `CGVirtualDisplay` and retain the display handle), `VirtualDisplayManager.swift`, and `main.swift` supporting `--self-test-display --width <W> --height <H> --fps 60 [--hidpi]`.
+  - Verification (`verify_dp1.py`):
+    - Run `python3 tabdisplay.py --probe --json` and assert valid JSON with `swift`, `adb`, `width > height`.
+    - Compile `mac_host` using `CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache swift build -c release --package-path mac_host`.
+    - Run `mac_host/.build/release/TabDisplayHost --self-test-display --width 1280 --height 800 --fps 60` and assert exit 0, `active=true` in `CGGetActiveDisplayList`, `bounds=1280x800`, and `displayID != 12345`.
 
-- DP 2: Mac Host Native 1:1 Virtual Display (`CGVirtualDisplay`)
-  - Deliverables: `mac_host/Package.swift`, Objective-C private header/shim (`CVirtualDisplay`), `VirtualDisplayManager.swift`, and `main.swift` implementing `--self-test-display --width <W> --height <H> --fps 60`.
-  - Verification (`verify_dp2.py`): Compile `mac_host` in release mode (`swift build -c release`) with zero errors, run `TabDisplayHost --self-test-display --width 1280 --height 800 --fps 60`, and assert the output confirms a non-zero `CGDirectDisplayID` registered at exact `1280x800` bounds.
+- DP 2: Real GPU Frame Capture (ScreenCaptureKit) & Zero-Latency H.264 Encoder (VideoToolbox)
+  - Build:
+    1. Implement `ScreenCaptureEncoder.swift` attaching `SCStream` directly to the `CGDirectDisplayID` (`kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange`, 60 FPS, `queueDepth = 2`, `showsCursor = true`) and encoding frames with `VTCompressionSession` H.264 High Profile (`RealTime = true`, `AllowFrameReordering = false`, `MaxKeyFrameInterval = 60`, configurable bitrate defaulting to `20000000`).
+    2. Convert AVCC length-prefixed samples into Annex-B (`0x00 0x00 0x00 0x01` start codes), prepending SPS (`0x67`) and PPS (`0x68`) NAL units before every IDR (`0x65`) keyframe, and expose `requestKeyFrame()` using `kVTEncodeFrameOptionKey_ForceKeyFrame`.
+    3. Wire `--self-test-encode <seconds> --width <W> --height <H> --fps 60 --bitrate <B>` in `main.swift` to capture real frames from the newly created virtual display and print total frames encoded, detected NAL unit types (`0x67`, `0x68`, `0x65`), total bytes, and average hardware encode time in ms/frame.
+  - Verification (`verify_dp2.py`):
+    - Build `mac_host` in release mode (`CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache swift build -c release --package-path mac_host`).
+    - Run `TabDisplayHost --self-test-encode 2 --width 1280 --height 800 --fps 60 --bitrate 20000000` and assert exit 0, `>= 80` real frames captured/encoded, presence of `0x67`, `0x68`, and `0x65` NAL units, `> 10000` encoded bytes, and average hardware encode time `< 10.0` ms/frame.
 
-- DP 3: Mac Host GPU Frame Capture (`ScreenCaptureKit`) & Zero-Latency H.264 Encoder (`VideoToolbox`)
-  - Deliverables: `ScreenCaptureEncoder.swift` (`SCStream` GPU `IOSurface` capture + `VTCompressionSession` zero-B-frame Annex-B H.264 encoder) and `--self-test-encode 2` CLI flag in `main.swift`.
-  - Verification (`verify_dp3.py`): Rebuild `TabDisplayHost`, run `--self-test-encode 2 --width 1280 --height 800 --fps 60 --bitrate 20000000`, and assert >= 80 frames encoded in 2 seconds (>= 40 FPS even under load), valid Annex-B SPS (`0x67`), PPS (`0x68`), and IDR (`0x65`) NAL units present, and average encode time < 10.0 ms/frame.
+- DP 3: Android 10 Client App (Fullscreen SurfaceView, localabstract Socket Server & Hardware MediaCodec)
+  - Build:
+    1. Create standalone Gradle + Kotlin project in `android_client/` (`compileSdk 30`, `minSdk 26`, `targetSdk 29`, Kotlin Gradle plugin, using `ANDROID_HOME` or `$HOME/Library/Android/sdk`).
+    2. Implement `MainActivity.kt` (sticky immersive fullscreen, `FLAG_KEEP_SCREEN_ON`, locked `sensorLandscape`, full-bleed `SurfaceView`), `UsbSocketServer.kt` (`LocalServerSocket("tabdisplay")` reading 12-byte big-endian frame headers + Annex-B H.264 payloads with reusable buffers), `HardwareVideoDecoder.kt` (`MediaCodec.createDecoderByType("video/avc")` outputting directly to `SurfaceView.holder.surface`, configuring Qualcomm low-latency keys `vendor.qti-ext-dec-low-latency.enable=1` and `low-latency=1` safely inside `try/catch`, feeding SPS/PPS with `BUFFER_FLAG_CODEC_CONFIG` and rendering immediately with `releaseOutputBuffer(idx, true)`), and `TouchForwarder.kt` (`OnTouchListener` normalizing coordinates `[0.0, 1.0]` and flushing 9-byte binary packets for `DOWN`, `MOVE`, `UP`, two-finger `SCROLL`, and long-press `RIGHT_CLICK` on a high-priority thread).
+  - Verification (`verify_dp3.py`):
+    - Compile `android_client/app/build/outputs/apk/debug/app-debug.apk` using `GRADLE_USER_HOME=/tmp/gradle-user-home gradle assembleDebug -p android_client` and assert APK exists and is `> 100000` bytes.
+    - Check `adb devices`; if an authorized device is attached, install via `adb install -r`, launch `com.tabdisplay.client/.MainActivity`, and assert `adb shell pidof com.tabdisplay.client` is non-empty and `adb logcat -d` confirms `localabstract:tabdisplay` is listening.
 
-- DP 4: Android 10 Client App (Fullscreen `SurfaceView`, `localabstract` Socket Server & Hardware `MediaCodec`)
-  - Deliverables: Complete Gradle + Kotlin project in `android_client/` (`AndroidManifest.xml`, `MainActivity.kt`, `UsbSocketServer.kt`, `HardwareVideoDecoder.kt`, `TouchForwarder.kt`), compiled headlessly into `app/build/outputs/apk/debug/app-debug.apk`.
-  - Verification (`verify_dp4.py`): Build `app-debug.apk` via Gradle CLI (`gradle assembleDebug` or `./gradlew assembleDebug`), verify APK exists and is > 100 KB; if an ADB device is connected, install via `adb install -r`, launch `com.tabdisplay.client/.MainActivity`, and verify `adb shell pidof com.tabdisplay.client` is non-empty and `logcat` reports `TabDisplay socket listening on localabstract:tabdisplay`.
+- DP 4: Wired USB Video Bridge (adb forward + TCP_NODELAY Live Streaming)
+  - Build:
+    1. Implement `USBBridgeClient.swift` connecting to `127.0.0.1:<port>` with `TCP_NODELAY = 1` and `SO_NOSIGPIPE = 1`, framing each encoded Annex-B access unit with the 12-byte big-endian header (`uint32` length + `uint64` monotonic nanoseconds), triggering `encoder.requestKeyFrame()` immediately on connect, and reading incoming 9-byte uplink packets on a concurrent receive loop.
+    2. Wire `VirtualDisplayManager`, `ScreenCaptureEncoder`, and `USBBridgeClient` together in `main.swift` for live bridge mode (`TabDisplayHost --width <W> --height <H> --fps 60 --bitrate 20000000 --port 5555`).
+  - Verification (`verify_dp4.py`):
+    - Start a local Python mock TCP server on an ephemeral port, launch `TabDisplayHost --width 1280 --height 800 --fps 60 --port <ephemeral_port>` for 2.5 seconds, and assert valid 12-byte big-endian headers, valid `0x00 0x00 0x00 0x01` Annex-B start codes with SPS/PPS/IDR NAL units, and `> 40` FPS streaming throughput.
+    - If an authorized ADB device is attached, also verify `adb forward tcp:5555 localabstract:tabdisplay` succeeds cleanly.
 
-- DP 5: Wired USB Video Bridge (`adb forward` + `TCP_NODELAY` End-to-End Streaming)
-  - Deliverables: `USBBridgeClient.swift` wired to `ScreenCaptureEncoder` and `VirtualDisplayManager` in `main.swift`, with `TCP_NODELAY = 1`, length-prefixed framing, and instant IDR keyframe push on client connect.
-  - Verification (`verify_dp5.py`): Test framing protocol via an automated local TCP mock receiver asserting valid 12-byte headers + H.264 SPS/PPS/IDR payloads at > 45 FPS; if the Android device is connected over ADB, establish `adb forward tcp:5555 localabstract:tabdisplay`, stream live virtual display video for 3 seconds, and assert `logcat` confirms active `MediaCodec` surface frame rendering with zero socket errors.
-
-- DP 6: Bidirectional Touchscreen Injection, Auto-Reconnect Launcher & Documentation
-  - Deliverables: `TouchInjector.swift` (`CGEvent` mouse/drag/right-click/scroll injection mapped to virtual display bounds) integrated into `USBBridgeClient.swift`, full lifecycle + USB disconnect/reconnect watchdog in `tabdisplay.py` (supporting `--dry-run`, `--width`, `--height`, `--fps`, `--bitrate`, `--hidpi`), and comprehensive `README.md`.
-  - Verification (`verify_dp6.py`): Run an automated 9-byte uplink touch packet injection test (`DOWN`, `MOVE`, `UP`, `SCROLL`, `RIGHT_CLICK`) verifying coordinate mapping to virtual display bounds and < 5 ms round-trip latency, verify `python3 tabdisplay.py --dry-run` exits 0 with a complete launch plan, and confirm `README.md` documents macOS Screen Recording & Accessibility setup.
+- DP 5: Bidirectional Touchscreen Injection, Auto-Reconnect Launcher & Documentation
+  - Build:
+    1. Implement `TouchInjector.swift` decoding the 9-byte uplink packets (`0x01` DOWN, `0x02` MOVE, `0x03` UP, `0x04` SCROLL, `0x05` RIGHT_CLICK), mapping normalized `(x, y)` coordinates onto `CGDisplayBounds(virtualDisplayID)`, and posting `CGEvent` mouse/drag/scroll events; wire it into `USBBridgeClient.swift`.
+    2. Complete `tabdisplay.py` with full CLI flags (`--width`, `--height`, `--fps`, `--bitrate`, `--port`, `--hidpi`, `--dry-run`), automatic tablet resolution detection, `adb forward` setup, launching `com.tabdisplay.client/.MainActivity`, supervising `TabDisplayHost`, and an auto-reconnect watchdog loop if the USB cable disconnects/reconnects.
+    3. Write comprehensive `README.md` covering USB File Transfer (MTP) + USB Debugging setup, macOS Screen Recording & Accessibility permissions, build steps, and CLI usage.
+  - Verification (`verify_dp5.py`):
+    - Run a local TCP test sending 9-byte `DOWN`, `MOVE`, `UP`, `SCROLL`, and `RIGHT_CLICK` packets into `TabDisplayHost` while running and assert zero errors and `< 5.0` ms round-trip handling.
+    - Run `python3 tabdisplay.py --dry-run` and assert exit code 0 and valid launch plan output.
+    - Assert `README.md` exists (`> 40` lines) and documents Screen Recording, Accessibility, and `tabdisplay.py` usage.
 
