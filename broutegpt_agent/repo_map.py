@@ -184,7 +184,7 @@ class RepoMapper:
         self,
         rel_path: str,
         start_line: int = 1,
-        end_line: int = 250,
+        end_line: int = 2000,
     ) -> str:
         target = self.executor.resolve_safe_path(rel_path)
         if not target.exists():

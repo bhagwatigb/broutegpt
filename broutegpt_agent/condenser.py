@@ -130,11 +130,12 @@ class RollingCondenser:
         self._save_cache()
         return summary_text.strip()
 
-    def _format_event_turn(self, ev: AgentEvent, max_chars: int = 3500) -> Dict[str, str]:
+    def _format_event_turn(self, ev: AgentEvent, max_chars: int = 32000) -> Dict[str, str]:
         role = "assistant" if ev.kind == "action" else "user"
         header = f"[Event #{ev.id} | DP {ev.dp_index} | {ev.kind.upper()}" + (f" | {ev.model}]" if ev.model else "]")
         body = _clip_text(ev.content, max_chars)
         return {"role": role, "content": f"{header}\n{body}"}
+
 
     def compile_history(
         self,
@@ -211,7 +212,7 @@ class RollingCondenser:
                     coalesced.append(dict(msg))
             return coalesced
 
-        raw_candidate = _assemble(head_events, "", middle_slice + tail_slice, per_item_chars=3500)
+        raw_candidate = _assemble(head_events, "", middle_slice + tail_slice, per_item_chars=32000)
         raw_tokens = sum(_estimate_text_tokens(m["content"]) for m in raw_candidate)
 
         condensed_summary = ""
@@ -226,7 +227,7 @@ class RollingCondenser:
             active_tail = middle_slice + tail_slice
 
         # Progressive budget-fit loop so even tight-context fallback models never overflow
-        per_item_chars = 3500
+        per_item_chars = 32000
         compiled = _assemble(head_events, condensed_summary, active_tail, per_item_chars=per_item_chars)
         est_tokens = sum(_estimate_text_tokens(m["content"]) for m in compiled)
 

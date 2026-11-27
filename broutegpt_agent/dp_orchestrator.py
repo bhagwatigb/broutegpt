@@ -302,7 +302,7 @@ class DPOrchestrator:
                 consecutive_failures=consecutive_failures,
                 has_written_code=has_written_code,
             )
-            budget = 14000 if tier == "speed" else 24000
+            budget = 32000 if tier == "speed" else 48000
             compiled = self.condenser.compile_history(
                 self.stream,
                 target_token_budget=budget,
@@ -412,7 +412,7 @@ class DPOrchestrator:
             elif act == "read_file":
                 rel_path = str(action_obj["path"])
                 s_line = int(action_obj.get("start_line") or 1)
-                e_line = int(action_obj.get("end_line") or 250)
+                e_line = int(action_obj.get("end_line") or 2000)
                 try:
                     obs_text = self.mapper.read_file_numbered(rel_path, start_line=s_line, end_line=e_line)
                     print(f"  Inspected    : {rel_path} (lines {s_line}-{e_line})")
