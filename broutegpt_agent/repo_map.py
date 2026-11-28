@@ -215,8 +215,20 @@ class RepoMapper:
             entries.append(f"  {tag:<10} {item.name}")
         return f"Directory '{rel_path}':\n" + ("\n".join(entries) if entries else "  (empty)")
 
-    def grep_search(self, pattern: str, rel_path: str = ".", max_matches: int = 50) -> str:
-        """Search workspace files for a regex, returning 'relative/path.py:LINE: text' lines."""
+    def grep_search(
+        self,
+        pattern: str,
+        rel_path: str = ".",
+        max_matches: int = 50,
+        context_lines: int = 3,
+        glob: Optional[str] = None,
+        case_insensitive: bool = False,
+    ) -> str:
+        """Search workspace files for a regex with surrounding context lines and optional glob/case filters."""
+        import fnmatch
+        import shutil
+        import subprocess
+
         try:
             target = self.executor.resolve_safe_path(rel_path)
         except Exception as exc:
@@ -224,8 +236,12 @@ class RepoMapper:
         if not target.exists():
             raise FileNotFoundError(f"Path not found in workspace: {rel_path}")
 
+        ctx = max(0, min(int(context_lines), 10))
+        limit = max(1, int(max_matches))
+        flags = re.IGNORECASE if case_insensitive else 0
+
         try:
-            re.compile(pattern)
+            compiled = re.compile(pattern, flags)
         except re.error as exc:
             raise ValueError(f"Invalid regex pattern: {exc}") from exc
 
@@ -235,61 +251,105 @@ class RepoMapper:
         else:
             files = [f for f in files if f.is_relative_to(target)]
 
-        matches: List[str] = []
+        if glob:
+            files = [
+                f for f in files
+                if fnmatch.fnmatch(str(f.relative_to(self.workspace_root)), glob)
+                or fnmatch.fnmatch(f.name, glob)
+            ]
 
-        def _scan(fpath: Path, text: str) -> bool:
-            rel = str(fpath.relative_to(self.workspace_root))
-            for idx, line in enumerate(text.splitlines(), 1):
-                if re.search(pattern, line):
-                    matches.append(f"{rel}:{idx}: {line}")
-                    if len(matches) >= max_matches:
-                        return True
-            return False
-
-        import shutil
-        import subprocess
+        total_hits = 0
+        blocks: List[str] = []
+        used_rg = False
 
         rg = shutil.which("rg")
-        if rg:
+        if rg and not target.is_file():
             try:
-                result = subprocess.run(
-                    [rg, "--line-number", "--no-heading", "--color", "never", pattern, str(target)],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if result.returncode == 0:
-                    for line in result.stdout.splitlines():
-                        parts = line.split(":", 2)
-                        if len(parts) == 3:
-                            abs_path = Path(parts[0])
-                            try:
-                                rel = str(abs_path.relative_to(self.workspace_root))
-                            except ValueError:
-                                continue
-                            rel_parts = abs_path.relative_to(self.workspace_root).parts
-                            if any(p in IGNORE_DIRS or p.startswith(".") for p in rel_parts):
-                                continue
-                            matches.append(f"{rel}:{parts[1]}: {parts[2]}")
-                        if len(matches) >= max_matches:
-                            break
-            except Exception:
-                rg = None
+                cmd = [
+                    rg,
+                    "--line-number",
+                    "--no-heading",
+                    "--color",
+                    "never",
+                    "-C",
+                    str(ctx),
+                ]
+                if case_insensitive:
+                    cmd.append("-i")
+                if glob:
+                    cmd.extend(["-g", glob])
+                cmd.extend([pattern, str(target)])
 
-        if not rg:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode in (0, 1):
+                    used_rg = True
+                    cur_lines: List[str] = []
+                    cur_file: Optional[str] = None
+                    for raw_ln in result.stdout.splitlines():
+                        if raw_ln == "--":
+                            if cur_lines:
+                                total_hits += 1
+                                if len(blocks) < limit:
+                                    blocks.append("\n".join(cur_lines))
+                                cur_lines = []
+                            continue
+                        m_match = re.match(r"^(.+?):(\d+):(.*)$", raw_ln)
+                        m_ctx = re.match(r"^(.+?)-(\d+)-(.*)$", raw_ln)
+                        m = m_match or m_ctx
+                        if not m:
+                            continue
+                        abs_p = Path(m.group(1))
+                        try:
+                            rel = str(abs_p.relative_to(self.workspace_root))
+                        except ValueError:
+                            continue
+                        rel_parts = Path(rel).parts
+                        if any(p in IGNORE_DIRS or p.startswith(".") for p in rel_parts):
+                            continue
+                        if cur_file is not None and rel != cur_file and cur_lines:
+                            total_hits += 1
+                            if len(blocks) < limit:
+                                blocks.append("\n".join(cur_lines))
+                            cur_lines = []
+                        cur_file = rel
+                        sep = ":" if m_match else "-"
+                        cur_lines.append(f"{rel}:{m.group(2)}{sep} {m.group(3)}")
+                    if cur_lines:
+                        total_hits += 1
+                        if len(blocks) < limit:
+                            blocks.append("\n".join(cur_lines))
+            except Exception:
+                used_rg = False
+
+        if not used_rg:
             for fpath in files:
-                if len(matches) >= max_matches:
-                    break
+                rel = str(fpath.relative_to(self.workspace_root))
                 try:
-                    text = fpath.read_text(encoding="utf-8", errors="replace")
+                    lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
                 except Exception:
                     continue
-                if _scan(fpath, text):
-                    break
+                hit_indices = [i for i, ln in enumerate(lines) if compiled.search(ln)]
+                if not hit_indices:
+                    continue
+                for h_idx in hit_indices:
+                    total_hits += 1
+                    if len(blocks) >= limit:
+                        continue
+                    lo = max(0, h_idx - ctx)
+                    hi = min(len(lines), h_idx + ctx + 1)
+                    snippet = []
+                    for pos in range(lo, hi):
+                        mark = ":" if pos == h_idx else "-"
+                        snippet.append(f"{rel}:{pos + 1}{mark} {lines[pos]}")
+                    blocks.append("\n".join(snippet))
 
-        if not matches:
+        if not blocks:
             return "No matches found"
-        return "\n".join(matches)
+
+        out = "\n--\n".join(blocks)
+        if total_hits > len(blocks):
+            out += f"\n\n[Showing {len(blocks)} of {total_hits} match block(s); narrow with 'path' or 'glob' to inspect more]"
+        return out
 
     def glob_files(self, pattern: str, max_results: int = 100) -> str:
         """Return sorted workspace-relative paths matching pattern (skips ignored/hidden)."""

@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -293,23 +294,48 @@ class CheckpointManager:
         condenser: Optional[RollingCondenser] = None,
         restore_context: bool = True,
         reason: Optional[str] = None,
+        scope: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Atomically restores all workspace files (and removes untracked files created
-        after `step_id`) to the exact snapshot of `step_id`. When `restore_context=True`,
-        also rewinds `EventStream` and invalidates stale `RollingCondenser` cache entries.
+        Atomically restores workspace files and/or EventStream context to `step_id`.
+        `scope` can be 'both' (files + chat/events), 'code' (files only), or
+        'chat' (EventStream + condenser only, leaving files intact).
         """
         target = self.get_step(step_id)
         if target is None:
             raise ValueError(f"Cannot rollback: checkpoint step #{step_id} does not exist.")
 
-        self._run_git(["read-tree", "--reset", "-u", target.commit_hash])
-        self._run_git(["clean", "-fd"])
+        eff_scope = (scope or ("both" if restore_context else "code")).strip().lower()
+        if eff_scope not in ("both", "code", "chat"):
+            raise ValueError(f"Invalid rollback scope '{eff_scope}'. Must be 'both', 'code', or 'chat'.")
 
+        restore_code = eff_scope in ("both", "code")
+        restore_chat = eff_scope in ("both", "chat")
 
-        why = reason or f"Manual/autonomous rollback to step #{step_id} ({target.label})"
+        if restore_code:
+            self._run_git(["read-tree", "--reset", "-u", target.commit_hash])
+            self._run_git(["clean", "-fd"])
+
+            plan_file = self.state_dir / "dp_plan.json"
+            if plan_file.exists():
+                try:
+                    plan = json.loads(plan_file.read_text(encoding="utf-8"))
+                    verified_dps = {
+                        rec.dp_index
+                        for rec in self._records
+                        if rec.step_id <= step_id and rec.is_dp_verified
+                    }
+                    for dp in plan.get("dps", []):
+                        if int(dp.get("id", 0)) not in verified_dps:
+                            dp["status"] = "pending"
+                    plan_file.write_text(json.dumps(plan, indent=2, ensure_ascii=False), encoding="utf-8")
+                except Exception:
+                    pass
+
+        why = reason or f"Manual/autonomous rollback ({eff_scope}) to step #{step_id} ({target.label})"
+
         discarded_events = 0
-        if restore_context and stream is not None:
+        if restore_chat and stream is not None:
             discarded_events = stream.rewind_to(target.event_id, reason=why)
             if condenser is not None:
                 condenser.invalidate_after(target.event_id)
@@ -318,11 +344,12 @@ class CheckpointManager:
         rollback_rec = self.capture(
             dp_index=target.dp_index,
             event_id=post_event_id,
-            label=f"rollback_to_step_{step_id}",
+            label=f"rollback_{eff_scope}_to_step_{step_id}",
             model=None,
             is_dp_verified=target.is_dp_verified,
         )
         return {
+            "scope": eff_scope,
             "restored_step_id": step_id,
             "restored_commit": target.commit_hash,
             "restored_dp_index": target.dp_index,
@@ -330,4 +357,222 @@ class CheckpointManager:
             "discarded_events": discarded_events,
             "new_checkpoint_step_id": rollback_rec.step_id,
         }
+
+    def branch_from_step(
+        self,
+        step_id: int,
+        branch_name: Optional[str] = None,
+        stream: Optional[EventStream] = None,
+    ) -> Dict[str, Any]:
+        """
+        Fork a new isolated session directory under `.broutegpt/branches/<branch_name>`
+        and create a shadow-Git branch ref at `step_id` without mutating the active workspace.
+        """
+        target = self.get_step(step_id)
+        if target is None:
+            raise ValueError(f"Cannot branch: checkpoint step #{step_id} does not exist.")
+
+        safe_name = (branch_name or f"branch-step-{step_id}-{int(time.time())}").strip()
+        safe_name = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "-" for ch in safe_name).strip("-") or f"branch-step-{step_id}"
+
+        self._run_git(["branch", "-f", safe_name, target.commit_hash])
+
+        branches_root = self.state_dir / "branches"
+        branches_root.mkdir(parents=True, exist_ok=True)
+        fork_dir = branches_root / safe_name
+        fork_dir.mkdir(parents=True, exist_ok=True)
+
+        # Populate fork_dir with the exact file tree at target.commit_hash
+        subprocess.run(
+            [
+                "git",
+                f"--git-dir={self.shadow_git_dir}",
+                f"--work-tree={fork_dir}",
+                "read-tree",
+                "--reset",
+                "-u",
+                target.commit_hash,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Reset shadow index back to current HEAD so active workspace index stays untouched
+        head_sha = self._run_git(["rev-parse", "HEAD"]).stdout.strip()
+        self._run_git(["read-tree", head_sha], check=False)
+
+        fork_state = fork_dir / ".broutegpt"
+        fork_state.mkdir(parents=True, exist_ok=True)
+
+        if stream is not None:
+            kept_events = [ev.to_dict() for ev in stream.events if ev.id <= target.event_id]
+            (fork_state / "events.jsonl").write_text(
+                "\n".join(json.dumps(e, ensure_ascii=False) for e in kept_events) + ("\n" if kept_events else ""),
+                encoding="utf-8",
+            )
+
+        plan_file = self.state_dir / "dp_plan.json"
+        if plan_file.exists():
+            try:
+                plan = json.loads(plan_file.read_text(encoding="utf-8"))
+                verified_dps = {
+                    rec.dp_index
+                    for rec in self._records
+                    if rec.step_id <= step_id and rec.is_dp_verified
+                }
+                for dp in plan.get("dps", []):
+                    if int(dp.get("id", 0)) not in verified_dps:
+                        dp["status"] = "pending"
+                (fork_state / "dp_plan.json").write_text(
+                    json.dumps(plan, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+        return {
+            "branch_name": safe_name,
+            "source_step_id": step_id,
+            "source_commit": target.commit_hash,
+            "source_event_id": target.event_id,
+            "branch_dir": str(fork_dir),
+        }
+
+    def create_dp_worktree(
+        self,
+        dp_id: int,
+        base_commit: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Creates an isolated git worktree at `.broutegpt/worktrees/dp-<id>` checked out
+        on branch `dp-<id>-wt` from `base_commit` (or current shadow HEAD).
+        """
+        base_sha = (base_commit or self._run_git(["rev-parse", "HEAD"]).stdout.strip()).strip()
+        worktrees_root = self.state_dir / "worktrees"
+        worktrees_root.mkdir(parents=True, exist_ok=True)
+        worktree_dir = worktrees_root / f"dp-{dp_id}"
+        branch_name = f"dp-{dp_id}-wt"
+
+        if worktree_dir.exists():
+            self.cleanup_dp_worktree(dp_id, worktree_dir)
+
+        self._run_git(["worktree", "add", "-B", branch_name, str(worktree_dir), base_sha])
+
+        wt_state = worktree_dir / ".broutegpt"
+        wt_state.mkdir(parents=True, exist_ok=True)
+        for cfg_name in ("dp_plan.json", "settings.json", "hooks.json", "MEMORY.md"):
+            src_cfg = self.state_dir / cfg_name
+            if src_cfg.is_file():
+                shutil.copy2(src_cfg, wt_state / cfg_name)
+
+        return {
+            "dp_id": dp_id,
+            "branch_name": branch_name,
+            "base_commit": base_sha,
+            "worktree_dir": str(worktree_dir),
+        }
+
+    def merge_dp_worktree(
+        self,
+        dp_id: int,
+        worktree_dir: str | Path,
+        title: str = "",
+        event_id: int = 0,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Commits verified worktree changes onto `dp-<id>-wt` and merges that branch
+        cleanly into the main workspace shadow repo. Aborts cleanly on conflict.
+        """
+        wt_path = Path(worktree_dir).expanduser().resolve()
+        branch_name = f"dp-{dp_id}-wt"
+
+        add_res = subprocess.run(
+            ["git", "-C", str(wt_path), "add", "-A"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if add_res.returncode != 0:
+            raise RuntimeError(f"Failed staging worktree DP {dp_id}: {add_res.stderr.strip()}")
+
+        commit_msg = f"DP {dp_id} worktree verified: {title or f'DP {dp_id}'}"
+        cmt_res = subprocess.run(
+            ["git", "-C", str(wt_path), "commit", "--allow-empty", "-m", commit_msg],
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+        if cmt_res.returncode != 0:
+            raise RuntimeError(f"Failed committing worktree DP {dp_id}: {cmt_res.stderr.strip()}")
+
+        wt_sha = subprocess.run(
+            ["git", "-C", str(wt_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+        merge_res = self._run_git(
+            ["merge", "--no-ff", "--no-edit", "-m", f"Merge {branch_name}: {title or f'DP {dp_id}'}", branch_name],
+            check=False,
+        )
+        if merge_res.returncode != 0:
+            conflict_out = (merge_res.stdout + "\n" + merge_res.stderr).strip()
+            self._run_git(["merge", "--abort"], check=False)
+            return {
+                "merged": False,
+                "conflict": True,
+                "dp_id": dp_id,
+                "branch_name": branch_name,
+                "worktree_commit": wt_sha,
+                "details": conflict_out,
+            }
+
+        merged_sha = self._run_git(["rev-parse", "HEAD"]).stdout.strip()
+        stat_res = self._run_git(["show", "--stat", "--format=", merged_sha], check=False)
+        stat_lines = [ln.strip() for ln in stat_res.stdout.splitlines() if ln.strip()]
+        summary = stat_lines[-1] if stat_lines else "merged worktree"
+
+        rec = CheckpointRecord(
+            step_id=len(self._records) + 1,
+            commit_hash=merged_sha,
+            timestamp=time.time(),
+            dp_index=dp_id,
+            event_id=event_id,
+            label=f"merge_worktree_dp_{dp_id}",
+            model=model,
+            is_dp_verified=False,
+            files_changed=summary,
+        )
+        self._append_record(rec)
+
+        return {
+            "merged": True,
+            "conflict": False,
+            "dp_id": dp_id,
+            "branch_name": branch_name,
+            "worktree_commit": wt_sha,
+            "merged_commit": merged_sha,
+            "checkpoint_step_id": rec.step_id,
+        }
+
+    def cleanup_dp_worktree(
+        self,
+        dp_id: int,
+        worktree_dir: Optional[str | Path] = None,
+    ) -> None:
+        """Removes the isolated git worktree directory, prunes metadata, and deletes temporary branch."""
+        wt_path = (
+            Path(worktree_dir).expanduser().resolve()
+            if worktree_dir
+            else (self.state_dir / "worktrees" / f"dp-{dp_id}")
+        )
+        branch_name = f"dp-{dp_id}-wt"
+        self._run_git(["worktree", "remove", "--force", str(wt_path)], check=False)
+        if wt_path.exists():
+            shutil.rmtree(wt_path, ignore_errors=True)
+        self._run_git(["worktree", "prune"], check=False)
+        self._run_git(["branch", "-D", branch_name], check=False)
 

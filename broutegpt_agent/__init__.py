@@ -18,6 +18,7 @@ from .condenser import RollingCondenser
 from .dp_orchestrator import DPOrchestrator
 from .event_stream import AgentEvent, EventStream
 from .input_inspector import InputInspector
+from .mcp_bridge import MCPRegistry, run_mcp_server
 from .repo_map import RepoMapper
 from .router_adapter import CloudFirstRouter
 from .terminal_executor import CommandResult, TerminalExecutor
@@ -33,6 +34,7 @@ __all__ = [
     "EditOutcome",
     "EventStream",
     "InputInspector",
+    "MCPRegistry",
     "RepoMapper",
     "RollingCondenser",
     "StaticCheckResult",

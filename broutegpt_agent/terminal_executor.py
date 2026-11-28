@@ -68,17 +68,45 @@ class CommandResult:
         return _truncate_middle(combined, max_chars=max_chars)
 
 
+SCRUBBED_ENV_EXACT = {"GITHUB_TOKEN"}
+SCRUBBED_ENV_SUFFIXES = ("_API_KEY", "_TOKEN")
+SCRUBBED_ENV_PREFIXES = ("AWS_",)
+
+
+def _scrub_child_env(base_env: Dict[str, str]) -> Dict[str, str]:
+    """Return a copy of the environment stripped of sensitive API keys, tokens, and cloud secrets."""
+    cleaned: Dict[str, str] = {}
+    for k, v in base_env.items():
+        ku = k.upper()
+        if (
+            ku in SCRUBBED_ENV_EXACT
+            or ku.endswith(SCRUBBED_ENV_SUFFIXES)
+            or ku.startswith(SCRUBBED_ENV_PREFIXES)
+        ):
+            continue
+        cleaned[k] = v
+    return cleaned
+
+
 class TerminalExecutor:
     """
-    Workspace-jailed macOS Zsh executor with process-group timeout termination,
-    path/command boundary enforcement, and optional kernel-level sandbox-exec.
+    Workspace-jailed Zsh/shell executor with process-group timeout termination,
+    path/command boundary enforcement, credential scrubbing, macOS Seatbelt,
+    and Linux bubblewrap sandboxing.
     """
 
-    def __init__(self, workspace_dir: str | Path, default_timeout: int = 90, use_kernel_sandbox: bool = True) -> None:
+    def __init__(
+        self,
+        workspace_dir: str | Path,
+        default_timeout: int = 90,
+        use_kernel_sandbox: bool = True,
+        strict_sandbox: bool = False,
+    ) -> None:
         self.workspace_root = Path(workspace_dir).expanduser().resolve()
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.default_timeout = default_timeout
         self.use_kernel_sandbox = bool(use_kernel_sandbox)
+        self.strict_sandbox = bool(strict_sandbox)
 
     def resolve_safe_path(self, target_path: str | Path) -> Path:
         raw = Path(target_path)
@@ -98,24 +126,59 @@ class TerminalExecutor:
             if re.search(pattern, command):
                 raise ValueError(f"Command blocked by safety filter pattern: '{pattern}'")
 
+    def _sb_escape(self, p: str) -> str:
+        return p.replace("\\", "\\\\").replace('"', '\\"')
+
+    def is_sandbox_disabled(self) -> bool:
+        return os.getenv("BROUTEGPT_NO_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+
     def is_macos_sandbox_available(self) -> bool:
+        if self.is_sandbox_disabled():
+            return False
         return bool(
             self.use_kernel_sandbox
             and sys.platform == "darwin"
             and Path("/usr/bin/sandbox-exec").is_file()
         )
 
+    def get_bubblewrap_path(self) -> Optional[str]:
+        if self.is_sandbox_disabled() or not self.use_kernel_sandbox:
+            return None
+        if not sys.platform.startswith("linux"):
+            return None
+        return shutil.which("bwrap")
+
     def _build_seatbelt_profile(self) -> str:
         ws_path = str(self.workspace_root)
-        # Escape backslashes and double quotes for SBPL string literal
-        escaped_ws = ws_path.replace("\\", "\\\\").replace('"', '\\"')
+        home_path = str(Path.home().resolve())
+        escaped_ws = self._sb_escape(ws_path)
+        escaped_home = self._sb_escape(home_path)
+        git_hooks = self._sb_escape(str(self.workspace_root / ".git" / "hooks"))
+        git_config = self._sb_escape(str(self.workspace_root / ".git" / "config"))
+        state_dir = self._sb_escape(str(self.workspace_root / ".broutegpt"))
+        ssh_dir = self._sb_escape(str(Path(home_path) / ".ssh"))
+        aws_dir = self._sb_escape(str(Path(home_path) / ".aws"))
+        gnupg_dir = self._sb_escape(str(Path(home_path) / ".gnupg"))
+
+        base_policy = "(allow default)"
+        if self.strict_sandbox:
+            base_policy = (
+                "(allow default)\n"
+                "(deny network*)"
+            )
+
         return f"""(version 1)
-(allow default)
+{base_policy}
 (deny file-write*)
 (allow file-write*
   (subpath "{escaped_ws}")
   (subpath "/tmp")
   (subpath "/private/tmp")
+  (subpath "/var/folders")
+  (subpath "/private/var/folders")
+  (subpath "{escaped_home}/Library/Caches/org.swift.swiftpm")
+  (subpath "{escaped_home}/Library/org.swift.swiftpm")
+  (subpath "{escaped_home}/.gradle")
   (literal "/dev/null")
   (literal "/dev/zero")
   (literal "/dev/tty")
@@ -123,7 +186,57 @@ class TerminalExecutor:
   (regex #"^/dev/fd/")
   (regex #"^/dev/tty")
 )
+(deny file-write*
+  (subpath "{git_hooks}")
+  (literal "{git_config}")
+  (subpath "{state_dir}")
+)
+(deny file-read*
+  (subpath "{ssh_dir}")
+  (subpath "{aws_dir}")
+  (subpath "{gnupg_dir}")
+)
 """
+
+    def _build_bubblewrap_cmd(self, bwrap_bin: str, shell_bin: str, command: str) -> list[str]:
+        home_path = Path.home().resolve()
+        cmd: list[str] = [
+            bwrap_bin,
+            "--ro-bind", "/", "/",
+            "--dev", "/dev",
+            "--proc", "/proc",
+            "--tmpfs", "/tmp",
+            "--bind", str(self.workspace_root), str(self.workspace_root),
+            "--chdir", str(self.workspace_root),
+            "--unshare-pid",
+        ]
+        if self.strict_sandbox:
+            cmd.append("--unshare-net")
+
+        for protected_dir in (
+            self.workspace_root / ".git" / "hooks",
+            self.workspace_root / ".broutegpt",
+        ):
+            if protected_dir.exists():
+                cmd.extend(["--ro-bind", str(protected_dir), str(protected_dir)])
+
+        git_cfg = self.workspace_root / ".git" / "config"
+        if git_cfg.exists():
+            cmd.extend(["--ro-bind", str(git_cfg), str(git_cfg)])
+
+        for secret_dir in (home_path / ".ssh", home_path / ".aws", home_path / ".gnupg"):
+            if secret_dir.exists():
+                cmd.extend(["--tmpfs", str(secret_dir)])
+
+        for cache_dir in (
+            home_path / ".cache" / "org.swift.swiftpm",
+            home_path / ".gradle",
+        ):
+            if cache_dir.exists():
+                cmd.extend(["--bind", str(cache_dir), str(cache_dir)])
+
+        cmd.extend([shell_bin, "-lc", command])
+        return cmd
 
     def run(
         self,
@@ -137,10 +250,10 @@ class TerminalExecutor:
 
         shell_bin = "/bin/zsh" if Path("/bin/zsh").exists() else (shutil.which("bash") or "/bin/sh")
 
-        env = os.environ.copy()
+        env = _scrub_child_env(os.environ.copy())
         env["PROJECT_WORKSPACE"] = str(self.workspace_root)
         if env_extra:
-            env.update(env_extra)
+            env.update(_scrub_child_env(env_extra))
 
         sandboxed = False
         profile_file = None
@@ -157,12 +270,16 @@ class TerminalExecutor:
                 cmd_args = ["/usr/bin/sandbox-exec", "-f", profile_file, shell_bin, "-lc", command]
                 sandboxed = True
             except Exception:
-                # Fallback gracefully if sandbox file creation fails
                 cmd_args = [shell_bin, "-lc", command]
                 sandboxed = False
         else:
-            cmd_args = [shell_bin, "-lc", command]
-            sandboxed = False
+            bwrap_bin = self.get_bubblewrap_path()
+            if bwrap_bin:
+                cmd_args = self._build_bubblewrap_cmd(bwrap_bin, shell_bin, command)
+                sandboxed = True
+            else:
+                cmd_args = [shell_bin, "-lc", command]
+                sandboxed = False
 
         t0 = time.perf_counter()
         try:

@@ -61,10 +61,17 @@ class CloudFirstRouter:
     auto-erase once a model succeeds so console output stays clean.
     """
 
-    def __init__(self, router: Optional[FreeLLMRouter] = None, **router_kwargs: Any) -> None:
+    def __init__(
+        self,
+        router: Optional[FreeLLMRouter] = None,
+        hook_engine: Optional[Any] = None,
+        **router_kwargs: Any,
+    ) -> None:
         self.router = router if router is not None else FreeLLMRouter(**router_kwargs)
+        self.hook_engine = hook_engine
         self.call_log: List[Dict[str, Any]] = []
         self._provider_cooldown_until: Dict[str, float] = {}
+
 
     def _is_cloud(self, model: Dict[str, Any]) -> bool:
         prov = str(model.get("provider", "")).strip().lower()
@@ -227,6 +234,34 @@ class CloudFirstRouter:
 
         return sorted(pool, key=_coder_priority)
 
+    def get_active_input_limit(self, tier: str = "smart") -> Optional[int]:
+        """Return the input_limit of the highest-priority non-cooldown candidate for `tier` without network calls."""
+        now = time.time()
+        all_cloud = self._all_cloud_chat_models(vision_only=False)
+        if tier == "deep":
+            ranked = sorted(
+                all_cloud,
+                key=lambda m: (_deep_reasoning_score(m), m.get("output_limit", 0), m.get("input_limit", 0)),
+                reverse=True,
+            )
+        elif tier in ("speed", "fast_debug"):
+            ranked = _sort_models_by_speed(all_cloud)
+        else:
+            ranked = _sort_models(all_cloud)
+
+        for m in ranked:
+            if (
+                self.router._cooldown_until.get((m["provider"], m["id"]), 0.0) <= now
+                and self._provider_cooldown_until.get(m["provider"], 0.0) <= now
+                and int(m.get("input_limit") or 0) > 0
+            ):
+                return int(m["input_limit"])
+
+        for m in self.get_ollama_candidates(vision_only=False):
+            if int(m.get("input_limit") or 0) > 0:
+                return int(m["input_limit"])
+        return None
+
     def _ensure_ollama_running(self) -> None:
         """Starts `ollama serve` in the background on macOS if last-resort fallback is triggered."""
         ollama_bin = shutil.which("ollama")
@@ -255,6 +290,15 @@ class CloudFirstRouter:
         except Exception:
             pass
 
+    def _supports_native_tools(self, provider: str, model_id: str) -> bool:
+        prov = provider.strip().lower()
+        mid = model_id.strip().lower()
+        if prov == "ollama":
+            return False
+        if prov == "gemini" and "gemma" in mid:
+            return False
+        return prov in ("gemini", "groq", "openrouter", "nvidia", "huggingface")
+
     def _try_candidate_list(
         self,
         candidates: List[Dict[str, Any]],
@@ -267,7 +311,9 @@ class CloudFirstRouter:
         validator: Optional[Callable[[str], Optional[str]]],
         image_paths: Optional[List[str]],
         stage_label: str,
+        native_tools: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[Optional[str], Optional[str], List[str]]:
+
         now = time.time()
         active = [
             m for m in candidates
@@ -279,12 +325,32 @@ class CloudFirstRouter:
 
         is_tty = sys.stdout.isatty()
         errors: List[str] = []
+        prev_attempted_model: Optional[str] = None
 
         for idx, model in enumerate(active, 1):
             prov = model["provider"]
             mid = model["id"]
             if self._provider_cooldown_until.get(prov, 0.0) > time.time():
                 continue
+
+            effective_prompt = prompt
+            if prev_attempted_model is not None and self.hook_engine is not None:
+                sw_res = self.hook_engine.dispatch(
+                    "PreModelSwitch",
+                    {
+                        "from_model": prev_attempted_model,
+                        "to_model": f"{prov}:{mid}",
+                        "stage": stage_label,
+                        "attempt": idx,
+                        "previous_error": errors[-1][:300] if errors else "",
+                    },
+                )
+                if sw_res.blocked:
+                    errors.append(f"{prov}:{mid} -> Blocked by PreModelSwitch hook: {sw_res.block_reason}")
+                    prev_attempted_model = f"{prov}:{mid}"
+                    continue
+                if sw_res.additional_context:
+                    effective_prompt = f"{prompt}\n\n[PreModelSwitch additionalContext]\n{sw_res.additional_context}"
 
             eff_max = max_tokens
             if task_plan is not None:
@@ -298,17 +364,52 @@ class CloudFirstRouter:
                 is_tty,
             )
             try:
-                text = self.router._call_model(
-                    prov,
-                    mid,
-                    prompt,
-                    system_prompt,
-                    None,
-                    temperature,
-                    eff_max,
-                    image_paths=image_paths,
-                    history=history,
-                )
+                cand_tools = native_tools if (native_tools and self._supports_native_tools(prov, mid)) else None
+                try:
+                    if cand_tools is not None:
+                        text = self.router._call_model(
+                            prov,
+                            mid,
+                            effective_prompt,
+                            system_prompt,
+                            None,
+                            temperature,
+                            eff_max,
+                            image_paths=image_paths,
+                            history=history,
+                            native_tools=cand_tools,
+                        )
+                    else:
+                        text = self.router._call_model(
+                            prov,
+                            mid,
+                            effective_prompt,
+                            system_prompt,
+                            None,
+                            temperature,
+                            eff_max,
+                            image_paths=image_paths,
+                            history=history,
+                        )
+                except Exception as tool_exc:
+                    if cand_tools is not None and any(
+                        k in str(tool_exc).lower()
+                        for k in ("tool", "function", "400", "422", "unsupported", "invalid")
+                    ):
+                        text = self.router._call_model(
+                            prov,
+                            mid,
+                            effective_prompt,
+                            system_prompt,
+                            None,
+                            temperature,
+                            eff_max,
+                            image_paths=image_paths,
+                            history=history,
+                        )
+                    else:
+                        raise
+
                 if any(
                     text.count(text[i : i + 25]) > 8
                     for i in range(0, min(len(text), 4000), 25)
@@ -322,9 +423,16 @@ class CloudFirstRouter:
                         raise ValueError(f"Validator rejected output: {val_err}")
 
                 elapsed = round(time.perf_counter() - t0, 2)
-                hist_text = "\n".join(m.get("content", "") for m in (history or []))
-                p_tokens = _estimate_text_tokens(f"{system_prompt or ''}\n{hist_text}\n{prompt}")
-                c_tokens = _estimate_text_tokens(text)
+                usage = getattr(self.router, "last_call_usage", None) or {}
+                api_p = int(usage.get("prompt_tokens") or 0)
+                api_c = int(usage.get("completion_tokens") or 0)
+                if api_p > 0 or api_c > 0:
+                    p_tokens, c_tokens, tok_src = api_p, api_c, "api"
+                else:
+                    hist_text = "\n".join(m.get("content", "") for m in (history or []))
+                    p_tokens = _estimate_text_tokens(f"{system_prompt or ''}\n{hist_text}\n{prompt}")
+                    c_tokens = _estimate_text_tokens(text)
+                    tok_src = "estimated"
                 self.call_log.append({
                     "timestamp": time.time(),
                     "stage": stage_label,
@@ -333,6 +441,7 @@ class CloudFirstRouter:
                     "latency_sec": elapsed,
                     "prompt_tokens": p_tokens,
                     "completion_tokens": c_tokens,
+                    "token_source": tok_src,
                 })
 
                 # Erase all transient routing/fallback status text and print only the winning model
@@ -348,8 +457,14 @@ class CloudFirstRouter:
                     self.router._cooldown_until[(prov, mid)] = time.time() + 60.0
                 elif "Validator rejected output" in err_str:
                     self.router._cooldown_until[(prov, mid)] = time.time() + 120.0
-                elif any(code in err_str for code in ("400", "404")):
-                    self.router._cooldown_until[(prov, mid)] = time.time() + 600.0
+                elif any(code in err_str for code in ("400", "402", "404", "not found", "No endpoints")):
+                    self.router._cooldown_until[(prov, mid)] = time.time() + 86400.0
+                    for opt_k, items in self.router.models_by_option.items():
+                        self.router.models_by_option[opt_k] = [
+                            x for x in items if not (x.get("provider") == prov and x.get("id") == mid)
+                        ]
+                    if hasattr(self.router, "_save_cache"):
+                        self.router._save_cache()
                 elif any(code in err_str for code in ("401", "403", "No connection adapters")):
                     self._provider_cooldown_until[prov] = time.time() + 300.0
 
@@ -361,6 +476,7 @@ class CloudFirstRouter:
                     "error": err_str[:240],
                     "latency_sec": elapsed,
                 })
+                prev_attempted_model = f"{prov}:{mid}"
                 errors.append(f"{prov}:{mid} -> {err_str}")
                 short_err = err_str.splitlines()[0][:65]
                 _write_status_line(
@@ -381,7 +497,13 @@ class CloudFirstRouter:
         history: Optional[List[Dict[str, str]]] = None,
         validator: Optional[Callable[[str], Optional[str]]] = None,
         image_paths: Optional[List[str]] = None,
+        use_native_tools: bool = False,
     ) -> tuple[str, str]:
+        tool_defs: Optional[List[Dict[str, Any]]] = None
+        if use_native_tools:
+            from .tool_schemas import AGENT_TOOL_SPECS
+
+            tool_defs = AGENT_TOOL_SPECS
         """
         Zero-question autonomous query:
           1. Exhausts all active cloud models for the selected tier.
@@ -408,6 +530,7 @@ class CloudFirstRouter:
             validator=validator,
             image_paths=image_paths,
             stage_label=f"CLOUD:{tier}",
+            native_tools=tool_defs,
         )
         if text is not None and used_model is not None:
             return text, used_model
