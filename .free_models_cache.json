@@ -2,63 +2,7 @@
   "models_by_option": {
     "1": [
       {
-        "id": "llava:7b",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": true,
-        "est_tps": 35.0
-      },
-      {
-        "id": "qwen3.5:9b",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 18.0
-      },
-      {
         "id": "qwen2.5:1.5b",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 18.0
-      },
-      {
-        "id": "qwen2.5-coder:7b",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 35.0
-      },
-      {
-        "id": "qwen2.5:7b",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 35.0
-      },
-      {
-        "id": "llama3.1:8b-instruct-q4_K_M",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 35.0
-      },
-      {
-        "id": "llama3:latest",
-        "provider": "ollama",
-        "input_limit": 8192,
-        "output_limit": 4096,
-        "vision": false,
-        "est_tps": 18.0
-      },
-      {
-        "id": "llama3.2:latest",
         "provider": "ollama",
         "input_limit": 8192,
         "output_limit": 4096,
@@ -396,21 +340,10 @@
     ],
     "4": [
       {
-        "id": "inclusionai/ling-3.2-flash:free",
-        "provider": "openrouter",
-        "input_limit": 1048576,
-        "output_limit": 262144,
-        "vision": true,
-        "image_gen": false,
-        "chat": true,
-        "modality": "vision",
-        "est_tps": 95.0
-      },
-      {
         "id": "particle-ai/particle-1:free",
         "provider": "openrouter",
         "input_limit": 1048576,
-        "output_limit": 131072,
+        "output_limit": 943718,
         "vision": true,
         "image_gen": false,
         "chat": true,
@@ -761,28 +694,6 @@
         "est_tps": 75.0
       },
       {
-        "id": "tencent/Hy4-flash",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "RadixArk/DaisyRose-27B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
         "id": "thinkingmachines/Inkling-2-Small",
         "provider": "huggingface",
         "input_limit": 16384,
@@ -805,7 +716,40 @@
         "est_tps": 45.0
       },
       {
-        "id": "tencent/Hy4",
+        "id": "tencent/Hy4-flash",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "inclusionAI/LingSante-3.1-air-VL",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": true,
+        "image_gen": false,
+        "chat": true,
+        "modality": "vision",
+        "est_tps": 45.0
+      },
+      {
+        "id": "RadixArk/DaisyRose-27B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "zai-org/GLM-5.3-Flash",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -838,28 +782,6 @@
         "est_tps": 45.0
       },
       {
-        "id": "zai-org/GLM-5.3",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "meta-llama/Llama-3.1-8B-Instruct",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
         "id": "LiquidAI/LFM3-1.7B",
         "provider": "huggingface",
         "input_limit": 16384,
@@ -871,7 +793,7 @@
         "est_tps": 75.0
       },
       {
-        "id": "thinkingmachines/Inkling",
+        "id": "google/gemma-4-26B-A4B-it",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -882,7 +804,18 @@
         "est_tps": 45.0
       },
       {
-        "id": "zai-org/GLM-5.3-Flash",
+        "id": "tencent/Hy4",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "thinkingmachines/Inkling",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -904,17 +837,6 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen3.6-35B-A3B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
         "id": "moonshotai/Kimi-K3",
         "provider": "huggingface",
         "input_limit": 16384,
@@ -926,7 +848,18 @@
         "est_tps": 45.0
       },
       {
-        "id": "google/gemma-4-26B-A4B-it",
+        "id": "meta-llama/Llama-3.1-8B-Instruct",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4.1-Flash",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -937,7 +870,29 @@
         "est_tps": 45.0
       },
       {
-        "id": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "id": "Qwen/Qwen3.6-35B-A3B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "zai-org/GLM-5.3",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "Qwen/Qwen3.5-9B",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -970,29 +925,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "openai/gpt-oss-120b",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "mistralai/Mistral-Large-4-1T-A52B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "google/gemma-4-31B-it",
+        "id": "openai/gpt-oss-20b",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1014,7 +947,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "openai/gpt-oss-20b",
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1025,7 +958,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen3.5-9B",
+        "id": "google/gemma-4-31B-it",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1047,7 +980,40 @@
         "est_tps": 45.0
       },
       {
-        "id": "deepseek-ai/DeepSeek-V3.2",
+        "id": "mistralai/Mistral-Large-4-1T-A52B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "MiniMaxAI/MiniMax-M3.1-Flash",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "Qwen/Qwen3.8-2.4T-A95B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1080,28 +1046,6 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen3.8-2.4T-A95B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
         "id": "XiaomiMiMo/MiMo-V2.6-Pro-RL",
         "provider": "huggingface",
         "input_limit": 16384,
@@ -1113,14 +1057,25 @@
         "est_tps": 45.0
       },
       {
-        "id": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+        "id": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
-        "vision": true,
+        "vision": false,
         "image_gen": false,
         "chat": true,
-        "modality": "vision",
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "openai/gpt-oss-120b",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
         "est_tps": 45.0
       },
       {
@@ -1146,39 +1101,6 @@
         "est_tps": 45.0
       },
       {
-        "id": "deepseek-ai/DeepSeek-V4-Flash",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "XiaomiMiMo/MiMo-V2.6-Flash-MOPD",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "LiquidAI/LFM2.5-24B-A2B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
         "id": "Qwen/Qwen3.6-27B",
         "provider": "huggingface",
         "input_limit": 16384,
@@ -1190,18 +1112,7 @@
         "est_tps": 75.0
       },
       {
-        "id": "MiniMaxAI/MiniMax-M3.1-Flash",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "Gryphe/MythoMax-L2-13b",
+        "id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1212,7 +1123,29 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "id": "meta-models/Muse-Spark-Open-816B-A42B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "reflection/Beam-1.0-501B-A23B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "LiquidAI/LFM2.5-24B-A2B",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1256,51 +1189,18 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen3.5-35B-A3B",
+        "id": "inclusionAI/Ling-3.0-flash-VL",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
-        "vision": false,
+        "vision": true,
         "image_gen": false,
         "chat": true,
-        "modality": "chat",
+        "modality": "vision",
         "est_tps": 45.0
       },
       {
-        "id": "thinkingmachines/Inkling-Small",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "meta-models/Muse-Spark-Open-816B-A42B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "XiaomiMiMo/MiMo-V2.6-Flash-RL",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "reflection/Beam-1.0-501B-A23B",
+        "id": "Qwen/Qwen2.5-Coder-32B-Instruct",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1322,7 +1222,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        "id": "deepseek-ai/DeepSeek-V3.2",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1333,7 +1233,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "inclusionAI/Ling-3.0-flash-VL",
+        "id": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1344,29 +1244,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "google/gemma-3-27b-it",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "zai-org/GLM-5",
+        "id": "Gryphe/MythoMax-L2-13b",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1377,29 +1255,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "MiniMaxAI/MiniMax-M2.5",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "ibm-granite/granite-4.2-8b",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
+        "id": "google/gemma-3-12b-it",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1421,40 +1277,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "Sao10K/L3-8B-Lunaris-v1",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 75.0
-      },
-      {
-        "id": "google/gemma-3-12b-it",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
         "id": "Qwen/Qwen3-32B",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
-      },
-      {
-        "id": "tngtech/DeepSeek-TNG-R1T2-Chimera",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1476,7 +1299,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen3.5-27B",
+        "id": "MiniMaxAI/MiniMax-M2.5",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1485,17 +1308,6 @@
         "chat": true,
         "modality": "chat",
         "est_tps": 75.0
-      },
-      {
-        "id": "moonshotai/Kimi-K2.6",
-        "provider": "huggingface",
-        "input_limit": 16384,
-        "output_limit": 4096,
-        "vision": false,
-        "image_gen": false,
-        "chat": true,
-        "modality": "chat",
-        "est_tps": 45.0
       },
       {
         "id": "MiniMaxAI/MiniMax-M3",
@@ -1509,18 +1321,84 @@
         "est_tps": 75.0
       },
       {
-        "id": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "id": "ibm-granite/granite-4.2-8b",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
-        "vision": true,
+        "vision": false,
         "image_gen": false,
         "chat": true,
-        "modality": "vision",
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "Sao10K/L3-8B-Lunaris-v1",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "tngtech/DeepSeek-TNG-R1T2-Chimera",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
         "est_tps": 45.0
       },
       {
-        "id": "Qwen/Qwen2.5-72B-Instruct",
+        "id": "Qwen/Qwen3.5-35B-A3B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "moonshotai/Kimi-K2.6",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "thinkingmachines/Inkling-Small",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1564,7 +1442,18 @@
         "est_tps": 75.0
       },
       {
-        "id": "moondream/moondream3.1-9B-A2B",
+        "id": "Qwen/Qwen3.5-27B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1584,6 +1473,28 @@
         "chat": true,
         "modality": "chat",
         "est_tps": 45.0
+      },
+      {
+        "id": "Qwen/Qwen2.5-72B-Instruct",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "google/gemma-3-27b-it",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 75.0
       },
       {
         "id": "ByteDance-Seed/UI-TARS-1.5-7B",
@@ -1696,7 +1607,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "inclusionAI/Ling-3.0-flash",
+        "id": "anthracite-org/magnum-v4-72b",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1707,7 +1618,7 @@
         "est_tps": 45.0
       },
       {
-        "id": "anthracite-org/magnum-v4-72b",
+        "id": "zai-org/GLM-5",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1727,6 +1638,17 @@
         "chat": true,
         "modality": "chat",
         "est_tps": 75.0
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
       },
       {
         "id": "Undi95/ReMM-SLERP-L2-13B",
@@ -1861,7 +1783,18 @@
         "est_tps": 45.0
       },
       {
-        "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        "id": "moondream/moondream3.1-9B-A2B",
+        "provider": "huggingface",
+        "input_limit": 16384,
+        "output_limit": 4096,
+        "vision": false,
+        "image_gen": false,
+        "chat": true,
+        "modality": "chat",
+        "est_tps": 45.0
+      },
+      {
+        "id": "inclusionAI/Ling-3.0-flash",
         "provider": "huggingface",
         "input_limit": 16384,
         "output_limit": 4096,
@@ -1877,15 +1810,11 @@
     "image_transcription": [
       {
         "provider": "gemini",
-        "id": "gemini-3.8-flash"
-      },
-      {
-        "provider": "gemini",
         "id": "gemini-3.7-flash"
       },
       {
-        "provider": "openrouter",
-        "id": "inclusionai/ling-3.2-flash:free"
+        "provider": "gemini",
+        "id": "gemini-3.8-flash"
       },
       {
         "provider": "groq",
@@ -1946,16 +1875,12 @@
         "id": "openai/gpt-oss-20b"
       },
       {
-        "provider": "ollama",
-        "id": "llama3.2:3b"
+        "provider": "groq",
+        "id": "allam-2-7b"
       },
       {
         "provider": "groq",
         "id": "qwen/qwen3.8-27b"
-      },
-      {
-        "provider": "groq",
-        "id": "allam-2-7b"
       },
       {
         "provider": "gemini",
@@ -1969,27 +1894,31 @@
       },
       {
         "provider": "openrouter",
-        "id": "inclusionai/ling-3.2-flash:free"
+        "id": "particle-ai/particle-1:free"
       },
       {
         "provider": "openrouter",
-        "id": "nvidia/nemotron-3.5-super-vl:free"
+        "id": "nvidia/nemotron-3-ultra-550b-a55b:free"
       },
       {
-        "provider": "gemini",
-        "id": "gemini-2.5-flash"
+        "provider": "groq",
+        "id": "openai/gpt-oss-120b"
       },
       {
-        "provider": "gemini",
-        "id": "gemini-flash-latest"
+        "provider": "huggingface",
+        "id": "thinkingmachines/Inkling-2-Small"
       },
       {
-        "provider": "gemini",
-        "id": "gemini-flash-lite-latest"
+        "provider": "huggingface",
+        "id": "thinkingmachines/Inkling"
       },
       {
-        "provider": "gemini",
-        "id": "gemini-2.5-flash-lite"
+        "provider": "huggingface",
+        "id": "openai/gpt-oss-120b"
+      },
+      {
+        "provider": "huggingface",
+        "id": "deepseek-ai/DeepSeek-R1-0528"
       }
     ]
   }
